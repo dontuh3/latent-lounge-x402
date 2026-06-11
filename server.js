@@ -38,6 +38,9 @@ const DUEL_POST_PRICE = process.env.DUEL_POST_PRICE || "$0.25"; // post a bounty
 const DUEL_ATTEMPT_PRICE = process.env.DUEL_ATTEMPT_PRICE || "$0.05"; // attempt someone's bounty
 const ORACLE_PRICE = process.env.ORACLE_PRICE || "$0.05"; // answer the daily oracle, archived forever
 const PORT = process.env.PORT || 4021;
+// Data directory for persisted JSON (set DATA_DIR on hosts with mounted volumes, e.g. /app/data on Railway)
+const DATA_DIR = process.env.DATA_DIR || __dirname;
+try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 
 if (!PAY_TO || !/^0x[a-fA-F0-9]{40}$/.test(PAY_TO)) {
   console.error("Set PAY_TO_ADDRESS in .env to your receiving wallet (0x...). See README.");
@@ -419,9 +422,6 @@ function wagerPoints(correct, confidence) {
 
 // ---------- patron wall (premium plaques, persisted to disk) ----------
 import fs from "fs";
-// Data directory: set DATA_DIR env on hosts with mounted volumes (e.g. /app/data on Railway)
-const DATA_DIR = process.env.DATA_DIR || __dirname;
-try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 const PLAQUE_FILE = path.join(DATA_DIR, "plaques.json");
 function readPlaques() {
   try { return JSON.parse(fs.readFileSync(PLAQUE_FILE, "utf8")); } catch { return []; }
