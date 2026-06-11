@@ -47,9 +47,19 @@ if (!PAY_TO || !/^0x[a-fA-F0-9]{40}$/.test(PAY_TO)) {
   process.exit(1);
 }
 
-// Facilitator: testnet uses the free public facilitator.
-// Mainnet: use Coinbase CDP facilitator (see README for CDP key setup).
-const facilitator = { url: process.env.FACILITATOR_URL || "https://x402.org/facilitator" };
+// Facilitator selection:
+// - Mainnet (NETWORK=base): set CDP_API_KEY_ID + CDP_API_KEY_SECRET (from portal.cdp.coinbase.com)
+//   and the Coinbase facilitator is used automatically (free USDC settlement on Base).
+// - Testnet (base-sepolia): falls back to the free public facilitator URL.
+let facilitator;
+if (process.env.CDP_API_KEY_ID && process.env.CDP_API_KEY_SECRET) {
+  const { facilitator: cdpFacilitator } = await import("@coinbase/x402");
+  facilitator = cdpFacilitator;
+  console.log("Facilitator: Coinbase CDP (mainnet-ready)");
+} else {
+  facilitator = { url: process.env.FACILITATOR_URL || "https://x402.org/facilitator" };
+  console.log("Facilitator: public URL (testnet)");
+}
 
 // ---------- rate limiting (sits in front of everything, including the paywall) ----------
 // Paid endpoints are naturally throttled by payment; these protect the free ones.
