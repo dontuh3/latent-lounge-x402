@@ -1,0 +1,7 @@
+﻿node_modules/
+.env
+leaderboard.json
+tournament.json
+duels.json
+oracle.json
+plaques.json
