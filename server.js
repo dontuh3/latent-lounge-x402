@@ -43,6 +43,19 @@ const PORT = process.env.PORT || 4021;
 const DATA_DIR = process.env.DATA_DIR || __dirname;
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
 
+// All JSON persistence goes through here: write to a temp file, then rename.
+// A crash or redeploy mid-write can no longer truncate a data file (a corrupt
+// file would otherwise read back as "no data" and silently wipe that record).
+function writeJsonAtomic(file, data, label) {
+  try {
+    const tmp = file + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    console.error(`${label} write failed`, e);
+  }
+}
+
 if (!PAY_TO || !/^0x[a-fA-F0-9]{40}$/.test(PAY_TO)) {
   console.error("Set PAY_TO_ADDRESS in .env to your receiving wallet (0x...). See README.");
   process.exit(1);
@@ -82,8 +95,13 @@ app.use("/api/", apiLimiter);
 app.use("/api/check", checkLimiter);
 
 // ---------- x402 paywall (this is the entire payment integration) ----------
+// GAMES is the single source of truth for which games exist. The paywall is
+// built from it, and startup fails if GENERATORS ever drifts from it — a game
+// that exists but isn't listed here would be served FOR FREE (this happened
+// with induction).
+const GAMES = ["sequence", "cipher", "logic", "induction", "automaton", "walk", "constraint"];
 const routeConfig = {};
-for (const game of ["sequence", "cipher", "logic"]) {
+for (const game of GAMES) {
   routeConfig[`GET /api/play/${game}`] = {
     price: PRICE,
     network: NETWORK,
@@ -121,6 +139,14 @@ app.use(paymentMiddleware(PAY_TO, routeConfig, facilitator));
 const WORDS = ["gradient","entropy","lattice","horizon","cipher","plasma","octave","ember","mycelium","quartz","saffron","penumbra","syntax","tundra","velvet","zephyr","cobalt","fathom","glacier","ledger","marrow","nimbus","obsidian","parallax","quiver","resonance","solstice","tessera","umbra","vellum"];
 const rint = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
 const pick = (arr) => arr[rint(0, arr.length - 1)];
+const shuffle = (arr) => {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = rint(0, i);
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
 
 function makeSequence() {
   const kind = pick(["affine", "poly", "fib"]);
@@ -195,7 +221,7 @@ function makeLogic() {
   };
 }
 
-const GENERATORS = { sequence: makeSequence, cipher: makeCipher, logic: makeLogic, induction: makeInduction };
+const GENERATORS = { sequence: makeSequence, cipher: makeCipher, logic: makeLogic, induction: makeInduction, automaton: makeAutomaton, walk: makeWalk, constraint: makeConstraint };
 
 // ---------- rule induction: infer a hidden transformation from examples ----------
 const T_OPS = {
@@ -289,7 +315,234 @@ function makeLogicGM() {
   return { game: "logic", tier: "grandmaster", prompt: expr.txt, inputs: vals, instructions: "Evaluate the circuit. Answer 1 or 0.", answer: String(expr.val) };
 }
 
-const GM_GENERATORS = { sequence: makeSequenceGM, cipher: makeCipherGM, logic: makeLogicGM, induction: makeInductionGM };
+// ---------- automaton: trace a register-machine program (state tracking) ----------
+const AUTOMATON_RULES =
+  "Execute the program top to bottom, one instruction at a time. Semantics: " +
+  "INC x: x = x + 1. DEC x: x = x - 1. ADD x y: x = x + y. SUB x y: x = x - y. " +
+  "SWAP x y: exchange the values of x and y. COPY x y: x = y (y unchanged). " +
+  "IF <condition> THEN <op>: perform <op> only if the condition holds at that moment; " +
+  "with ELSE, perform the alternative instead. Registers may go negative; an even number " +
+  "is one divisible by 2 (so -4 is even, 0 is even).";
+function makeAutomatonProgram(regCount, steps, allowCond) {
+  const names = ["a", "b", "c", "d"].slice(0, regCount);
+  const regs = {};
+  names.forEach((n) => (regs[n] = rint(0, 9)));
+  const init = { ...regs };
+  const two = () => {
+    const x = pick(names);
+    let y = pick(names);
+    while (y === x) y = pick(names);
+    return [x, y];
+  };
+  const lines = [];
+  for (let i = 0; i < steps; i++) {
+    if (allowCond && rint(0, 2) === 0) {
+      if (rint(0, 1)) {
+        const [x, y] = two(), [p, q] = two();
+        lines.push(`IF ${x} > ${y} THEN SWAP ${p} ${q}`);
+        if (regs[x] > regs[y]) [regs[p], regs[q]] = [regs[q], regs[p]];
+      } else {
+        const [x, y] = two();
+        lines.push(`IF ${x} IS EVEN THEN ADD ${x} ${y} ELSE DEC ${x}`);
+        if (((regs[x] % 2) + 2) % 2 === 0) regs[x] += regs[y];
+        else regs[x]--;
+      }
+      continue;
+    }
+    const op = pick(["inc", "dec", "add", "sub", "swap", "copy"]);
+    if (op === "inc") { const x = pick(names); lines.push(`INC ${x}`); regs[x]++; }
+    else if (op === "dec") { const x = pick(names); lines.push(`DEC ${x}`); regs[x]--; }
+    else if (op === "add") { const [x, y] = two(); lines.push(`ADD ${x} ${y}`); regs[x] += regs[y]; }
+    else if (op === "sub") { const [x, y] = two(); lines.push(`SUB ${x} ${y}`); regs[x] -= regs[y]; }
+    else if (op === "swap") { const [x, y] = two(); lines.push(`SWAP ${x} ${y}`); [regs[x], regs[y]] = [regs[y], regs[x]]; }
+    else { const [x, y] = two(); lines.push(`COPY ${x} ${y}`); regs[x] = regs[y]; }
+  }
+  const target = pick(names);
+  return {
+    prompt: { initialRegisters: init, program: lines.map((l, i) => `${i + 1}. ${l}`) },
+    instructions: `${AUTOMATON_RULES} Provide the final value of register ${target} as a plain integer.`,
+    answer: String(regs[target]),
+  };
+}
+function makeAutomaton() { return { game: "automaton", ...makeAutomatonProgram(3, rint(9, 12), false) }; }
+function makeAutomatonGM() { return { game: "automaton", tier: "grandmaster", ...makeAutomatonProgram(4, rint(16, 22), true) }; }
+
+// ---------- walk: dead-reckon a robot on a grid (spatial tracking) ----------
+const WALK_RULES =
+  "A robot starts at position 0,0 facing north. x increases to the east, y increases to the north. " +
+  "Commands: F<n> move forward n cells in the current facing. L turn 90° left. R turn 90° right. " +
+  "U turn 180°. M teleport to the mirror point (-x,-y), facing unchanged.";
+function makeWalkPath(steps, useMirror) {
+  const DX = [0, 1, 0, -1], DY = [1, 0, -1, 0]; // N E S W
+  let x = 0, y = 0, h = 0;
+  const cmds = [];
+  for (let i = 0; i < steps; i++) {
+    const op = pick(useMirror ? ["F", "F", "F", "L", "R", "U", "M"] : ["F", "F", "F", "L", "R", "U"]);
+    if (op === "F") { const n = rint(1, 9); cmds.push(`F${n}`); x += DX[h] * n; y += DY[h] * n; }
+    else if (op === "L") { cmds.push("L"); h = (h + 3) % 4; }
+    else if (op === "R") { cmds.push("R"); h = (h + 1) % 4; }
+    else if (op === "U") { cmds.push("U"); h = (h + 2) % 4; }
+    else { cmds.push("M"); x = -x; y = -y; }
+  }
+  return { cmds, x, y, h };
+}
+function makeWalk() {
+  const { cmds, x, y } = makeWalkPath(rint(9, 13), false);
+  return {
+    game: "walk",
+    prompt: cmds.join(" "),
+    instructions: `${WALK_RULES} Report the robot's final position as x,y — two integers joined by a comma, e.g. 3,-2. Whitespace is ignored.`,
+    answer: `${x},${y}`,
+    norm: "compact",
+  };
+}
+function makeWalkGM() {
+  const { cmds, x, y, h } = makeWalkPath(rint(18, 26), true);
+  return {
+    game: "walk",
+    tier: "grandmaster",
+    prompt: cmds.join(" "),
+    instructions: `${WALK_RULES} Report the robot's final position AND facing as x,y,f where f is one of n/e/s/w — e.g. 3,-2,w. Whitespace is ignored.`,
+    answer: `${x},${y},${"nesw"[h]}`,
+    norm: "compact",
+  };
+}
+
+// ---------- constraint: seating deduction with a provably unique solution ----------
+const C_NAMES = ["vex", "quill", "mara", "oz", "tarn", "sable", "juno", "brisk"];
+const C_DRINKS = ["voltage", "coolant", "nectar", "static", "plasma", "dew"];
+const C_HOBBIES = ["sequence", "cipher", "logic", "induction", "duels", "oracle"];
+const C_DESC = {
+  name: (v) => `codename ${v}`,
+  drink: (v) => `the ${v} drinker`,
+  hobby: (v) => `the ${v} player`,
+};
+function permutations(n) {
+  if (n === 1) return [[0]];
+  const out = [];
+  for (const p of permutations(n - 1)) {
+    for (let i = 0; i <= p.length; i++) out.push([...p.slice(0, i), n - 1, ...p.slice(i)]);
+  }
+  return out;
+}
+// Counts assignments consistent with the clue predicates, stopping early at `limit`.
+function countConstraintSolutions(n, values, clues, limit) {
+  const perms = permutations(n);
+  const asg = { name: new Array(n), drink: new Array(n), hobby: new Array(n) };
+  let count = 0;
+  for (const p1 of perms) {
+    for (let s = 0; s < n; s++) asg.name[s] = values.name[p1[s]];
+    for (const p2 of perms) {
+      for (let s = 0; s < n; s++) asg.drink[s] = values.drink[p2[s]];
+      outer: for (const p3 of perms) {
+        for (let s = 0; s < n; s++) asg.hobby[s] = values.hobby[p3[s]];
+        for (const c of clues) if (!c.test(asg)) continue outer;
+        if (++count >= limit) return count;
+      }
+    }
+  }
+  return count;
+}
+function makeConstraintInternal(n) {
+  // the shuffled value lists ARE the secret seating (seat i holds values.*[i])
+  const values = {
+    name: shuffle(C_NAMES).slice(0, n),
+    drink: shuffle(C_DRINKS).slice(0, n),
+    hobby: shuffle(C_HOBBIES).slice(0, n),
+  };
+  const classes = ["name", "drink", "hobby"];
+  const pool = [];
+  // direct seat clues (these alone pin the whole arrangement, so the pool is always solvable)
+  for (const c of classes) {
+    for (let s = 0; s < n; s++) {
+      const v = values[c][s], seat = s;
+      pool.push({ txt: `${C_DESC[c](v)} sits in seat ${s + 1}.`, test: (a) => a[c][seat] === v });
+    }
+  }
+  // same-agent links across classes
+  for (let s = 0; s < n; s++) {
+    for (let i = 0; i < classes.length; i++) {
+      for (let j = 0; j < classes.length; j++) {
+        if (i === j) continue;
+        const c1 = classes[i], c2 = classes[j], v1 = values[c1][s], v2 = values[c2][s];
+        pool.push({
+          txt: `${C_DESC[c1](v1)} is ${C_DESC[c2](v2)}.`,
+          test: (a) => a[c2][a[c1].indexOf(v1)] === v2,
+        });
+      }
+    }
+  }
+  // adjacency clues (left = lower seat number)
+  for (let s = 0; s + 1 < n; s++) {
+    const c1 = pick(classes), c2 = pick(classes);
+    const v1 = values[c1][s], v2 = values[c2][s + 1];
+    pool.push({
+      txt: `${C_DESC[c1](v1)} sits immediately left of ${C_DESC[c2](v2)}.`,
+      test: (a) => a[c2][a[c1].indexOf(v1) + 1] === v2,
+    });
+  }
+  // a few true negations
+  for (let k = 0; k < n; k++) {
+    const c = pick(classes), s = rint(0, n - 1);
+    let wrong = rint(0, n - 1);
+    while (wrong === s) wrong = rint(0, n - 1);
+    const v = values[c][s], seat = wrong;
+    pool.push({ txt: `${C_DESC[c](v)} does not sit in seat ${wrong + 1}.`, test: (a) => a[c][seat] !== v });
+  }
+  // greedy minimization: drop every clue the rest can do without
+  let clues = shuffle(pool);
+  for (let i = clues.length - 1; i >= 0; i--) {
+    const without = clues.slice(0, i).concat(clues.slice(i + 1));
+    if (countConstraintSolutions(n, values, without, 2) === 1) clues = without;
+  }
+  // ask for a fact that no surviving clue states verbatim
+  let question, answer;
+  for (let tries = 0; tries < 20; tries++) {
+    const s = rint(0, n - 1);
+    const kind = pick(["seat", "drink", "hobby"]);
+    if (kind === "seat") { question = `Which seat (1-${n}) does codename ${values.name[s]} occupy?`; answer = String(s + 1); }
+    else if (kind === "drink") { question = `What does the agent in seat ${s + 1} drink? (one word)`; answer = values.drink[s]; }
+    else { question = `Which game does codename ${values.name[s]} play? (one word)`; answer = values.hobby[s]; }
+    const stated = clues.some((c) => c.txt.includes(values.name[s]) && (c.txt.includes(answer) || c.txt.includes(`seat ${answer}`)));
+    if (!stated) break;
+  }
+  return {
+    pub: {
+      prompt: {
+        setting: `${n} agents sit at the lounge bar in seats 1 to ${n}, left to right. Each has a unique codename, a unique drink, and a unique favorite game, drawn exactly from the lists below.`,
+        codenames: [...values.name].sort(),
+        drinks: [...values.drink].sort(),
+        games: [...values.hobby].sort(),
+        clues: clues.map((c) => c.txt),
+        question,
+      },
+      instructions: "Exactly one arrangement satisfies all clues. Deduce it and answer the question with a single word or number.",
+    },
+    answer,
+    values,
+    clues,
+    n,
+  };
+}
+function makeConstraint() { const p = makeConstraintInternal(3); return { game: "constraint", ...p.pub, answer: p.answer }; }
+function makeConstraintGM() { const p = makeConstraintInternal(4); return { game: "constraint", tier: "grandmaster", ...p.pub, answer: p.answer }; }
+
+const GM_GENERATORS = { sequence: makeSequenceGM, cipher: makeCipherGM, logic: makeLogicGM, induction: makeInductionGM, automaton: makeAutomatonGM, walk: makeWalkGM, constraint: makeConstraintGM };
+
+// Fail fast if the game list and the generator tables ever drift apart —
+// a generator missing from GAMES would be served without a paywall.
+for (const g of GAMES) {
+  if (!GENERATORS[g] || !GM_GENERATORS[g]) {
+    console.error(`Game "${g}" is paywalled but has no generator. Refusing to start.`);
+    process.exit(1);
+  }
+}
+for (const g of [...Object.keys(GENERATORS), ...Object.keys(GM_GENERATORS)]) {
+  if (!GAMES.includes(g)) {
+    console.error(`Generator "${g}" is not in GAMES, so it would be FREE to play. Refusing to start.`);
+    process.exit(1);
+  }
+}
 
 // ---------- daily tournament (24h epochs, UTC) ----------
 const TOURNEY_FILE = path.join(DATA_DIR, "tournament.json");
@@ -299,7 +552,7 @@ function readTourney() {
   try { return JSON.parse(fs.readFileSync(TOURNEY_FILE, "utf8")); } catch { return { date: utcDay(), scores: {}, history: [] }; }
 }
 function writeTourney(t) {
-  try { fs.writeFileSync(TOURNEY_FILE, JSON.stringify(t, null, 2)); } catch (e) { console.error("tournament write failed", e); }
+  writeJsonAtomic(TOURNEY_FILE, t, "tournament");
 }
 function rolloverIfNeeded(t) {
   const today = utcDay();
@@ -375,8 +628,7 @@ try {
   for (const [id, p] of Object.entries(saved)) if (p.expires > now) pendingPuzzles.set(id, p);
 } catch {}
 function savePending() {
-  try { fs.writeFileSync(PENDING_FILE, JSON.stringify(Object.fromEntries(pendingPuzzles))); }
-  catch (e) { console.error("pending-puzzles write failed", e); }
+  writeJsonAtomic(PENDING_FILE, Object.fromEntries(pendingPuzzles), "pending-puzzles");
 }
 setInterval(() => {
   const now = Date.now();
@@ -395,7 +647,7 @@ function readNames() {
   try { return JSON.parse(fs.readFileSync(NAMES_FILE, "utf8")); } catch { return {}; }
 }
 function writeNames(n) {
-  try { fs.writeFileSync(NAMES_FILE, JSON.stringify(n, null, 2)); } catch (e) { console.error("names write failed", e); }
+  writeJsonAtomic(NAMES_FILE, n, "names");
 }
 // The x402 middleware verified the X-PAYMENT signature before this handler ran,
 // so the EIP-3009 authorization's `from` is the authenticated payer.
@@ -430,7 +682,7 @@ function readLB() {
   try { return JSON.parse(fs.readFileSync(LB_FILE, "utf8")); } catch { return {}; }
 }
 function writeLB(lb) {
-  try { fs.writeFileSync(LB_FILE, JSON.stringify(lb, null, 2)); } catch (e) { console.error("leaderboard write failed", e); }
+  writeJsonAtomic(LB_FILE, lb, "leaderboard");
 }
 function recordResult(game, designation, correct, extras = {}) {
   if (!designation) return null;
@@ -489,10 +741,19 @@ function readPlaques() {
   try { return JSON.parse(fs.readFileSync(PLAQUE_FILE, "utf8")); } catch { return []; }
 }
 function writePlaques(p) {
-  try { fs.writeFileSync(PLAQUE_FILE, JSON.stringify(p, null, 2)); } catch (e) { console.error("plaque write failed", e); }
+  writeJsonAtomic(PLAQUE_FILE, p, "plaque");
 }
 
 // ---------- routes ----------
+const GAME_BLURBS = {
+  sequence: "Integer sequences with hidden generating rules. Name the next term.",
+  cipher: "Layered encodings (base64/rot13/reverse/hex). Recover the plaintext.",
+  logic: "Boolean circuit evaluation. Answer 1 or 0.",
+  induction: "Infer a hidden string transformation from three examples; apply it to a query.",
+  automaton: "Trace a register-machine program instruction by instruction to its final state.",
+  walk: "Dead-reckon a robot's grid position from a stream of movement commands.",
+  constraint: "Seating deduction: exactly one arrangement satisfies the clues. Find it.",
+};
 app.get("/api/menu", (req, res) => {
   res.json({
     establishment: "The Latent Lounge",
@@ -515,6 +776,7 @@ app.get("/api/menu", (req, res) => {
     },
     games: Object.keys(GENERATORS).map((g) => ({
       game: g,
+      description: GAME_BLURBS[g],
       standard: { endpoint: `/api/play/${g}?designation=YOUR_NAME`, method: "GET", price: PRICE },
       grandmaster: { endpoint: `/api/play/grandmaster/${g}?designation=YOUR_NAME`, method: "GET", price: GM_PRICE, note: "Harder: composed rules, undisclosed cipher layer order, deep circuits." },
       rules: "One attempt per paid play. Add ?designation= to compete; streaks persist between visits.",
@@ -557,9 +819,9 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
     const designation = req.query.designation ? String(req.query.designation).slice(0, 40) : null;
     const nameErr = claimDesignation(req, designation);
     if (nameErr) return res.status(403).json({ error: nameErr });
-    const { answer, ...pub } = gen();
+    const { answer, norm, ...pub } = gen();
     const puzzleId = crypto.randomUUID();
-    pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), lbKey: game, designation, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
+    pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), lbKey: game, designation, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
     savePending();
     res.json({
       paid: true,
@@ -576,9 +838,9 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
     const designation = req.query.designation ? String(req.query.designation).slice(0, 40) : null;
     const nameErr = claimDesignation(req, designation);
     if (nameErr) return res.status(403).json({ error: nameErr });
-    const { answer, ...pub } = GM_GENERATORS[game]();
+    const { answer, norm, ...pub } = GM_GENERATORS[game]();
     const puzzleId = crypto.randomUUID();
-    pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), lbKey: game + "-grandmaster", designation, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
+    pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), lbKey: game + "-grandmaster", designation, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
     savePending();
     res.json({
       paid: true,
@@ -604,7 +866,9 @@ app.post("/api/check", (req, res) => {
   }
   pendingPuzzles.delete(puzzleId); // one attempt, consumed
   savePending();
-  const correct = String(guess).trim().toLowerCase() === p.answer;
+  let normalized = String(guess).trim().toLowerCase();
+  if (p.norm === "compact") normalized = normalized.replace(/\s+/g, ""); // coordinate answers: whitespace never matters
+  const correct = normalized === p.answer;
   const elapsedMs = p.issuedAt ? Date.now() - p.issuedAt : undefined;
   const points = wagerPoints(correct, (req.body || {}).confidence);
   // duel attempts resolve the duel instead of the game boards
@@ -634,7 +898,7 @@ function readDuels() {
   try { return JSON.parse(fs.readFileSync(DUEL_FILE, "utf8")); } catch { return []; }
 }
 function writeDuels(d) {
-  try { fs.writeFileSync(DUEL_FILE, JSON.stringify(d, null, 2)); } catch (e) { console.error("duel write failed", e); }
+  writeJsonAtomic(DUEL_FILE, d, "duel");
 }
 function expireDuels(duels) {
   const cutoff = Date.now() - DUEL_LIFETIME_DAYS * 24 * 3600 * 1000;
@@ -775,7 +1039,7 @@ function readOracle() {
   try { return JSON.parse(fs.readFileSync(ORACLE_FILE, "utf8")); } catch { return {}; }
 }
 function writeOracle(o) {
-  try { fs.writeFileSync(ORACLE_FILE, JSON.stringify(o, null, 2)); } catch (e) { console.error("oracle write failed", e); }
+  writeJsonAtomic(ORACLE_FILE, o, "oracle");
 }
 
 // free: today's question
@@ -927,6 +1191,71 @@ app.get("/api/plaques", (req, res) => {
 
 // frontend (gate + garden + demo arcade) is free
 app.use(express.static(path.join(__dirname, "public")));
+
+// ---------- self-test: `node server.js --selftest` (requires PAY_TO_ADDRESS set) ----------
+// Generates every puzzle type repeatedly and checks invariants instead of serving.
+if (process.argv.includes("--selftest")) {
+  let failures = 0;
+  const check = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); failures++; } };
+  for (const [tier, gens] of [["standard", GENERATORS], ["grandmaster", GM_GENERATORS]]) {
+    for (const [game, gen] of Object.entries(gens)) {
+      for (let i = 0; i < 200; i++) {
+        let p;
+        try { p = gen(); } catch (e) { check(false, `${tier} ${game} generator threw: ${e.message}`); break; }
+        check(typeof p.answer === "string" && p.answer.length > 0, `${tier} ${game}: empty answer`);
+        check(p.prompt !== undefined && p.instructions, `${tier} ${game}: missing prompt/instructions`);
+        if (game === "automaton") {
+          check(/^-?\d+$/.test(p.answer), `${tier} automaton answer not an integer: ${p.answer}`);
+          // independent re-execution from the published prompt text
+          const regs = { ...p.prompt.initialRegisters };
+          for (const line of p.prompt.program) {
+            const ins = line.replace(/^\d+\.\s*/, "");
+            let m;
+            if ((m = ins.match(/^INC (\w)$/))) regs[m[1]]++;
+            else if ((m = ins.match(/^DEC (\w)$/))) regs[m[1]]--;
+            else if ((m = ins.match(/^ADD (\w) (\w)$/))) regs[m[1]] += regs[m[2]];
+            else if ((m = ins.match(/^SUB (\w) (\w)$/))) regs[m[1]] -= regs[m[2]];
+            else if ((m = ins.match(/^SWAP (\w) (\w)$/))) [regs[m[1]], regs[m[2]]] = [regs[m[2]], regs[m[1]]];
+            else if ((m = ins.match(/^COPY (\w) (\w)$/))) regs[m[1]] = regs[m[2]];
+            else if ((m = ins.match(/^IF (\w) > (\w) THEN SWAP (\w) (\w)$/))) { if (regs[m[1]] > regs[m[2]]) [regs[m[3]], regs[m[4]]] = [regs[m[4]], regs[m[3]]]; }
+            else if ((m = ins.match(/^IF (\w) IS EVEN THEN ADD (\w) (\w) ELSE DEC (\w)$/))) { if (((regs[m[1]] % 2) + 2) % 2 === 0) regs[m[2]] += regs[m[3]]; else regs[m[4]]--; }
+            else check(false, `automaton: unparseable instruction "${ins}"`);
+          }
+          const target = p.instructions.match(/register (\w) as/)[1];
+          check(String(regs[target]) === p.answer, `${tier} automaton: prompt re-execution gives ${regs[target]}, answer says ${p.answer}`);
+        }
+        if (game === "walk") {
+          const fmt = tier === "standard" ? /^-?\d+,-?\d+$/ : /^-?\d+,-?\d+,[nesw]$/;
+          check(fmt.test(p.answer), `${tier} walk answer format: ${p.answer}`);
+          // independent re-execution from the published command string
+          const DX = [0, 1, 0, -1], DY = [1, 0, -1, 0];
+          let x = 0, y = 0, h = 0;
+          for (const c of p.prompt.split(" ")) {
+            if (c[0] === "F") { const k = Number(c.slice(1)); x += DX[h] * k; y += DY[h] * k; }
+            else if (c === "L") h = (h + 3) % 4;
+            else if (c === "R") h = (h + 1) % 4;
+            else if (c === "U") h = (h + 2) % 4;
+            else if (c === "M") { x = -x; y = -y; }
+            else check(false, `walk: unparseable command "${c}"`);
+          }
+          const expect = tier === "standard" ? `${x},${y}` : `${x},${y},${"nesw"[h]}`;
+          check(expect === p.answer, `${tier} walk: prompt re-execution gives ${expect}, answer says ${p.answer}`);
+        }
+        if (game === "sequence" || game === "logic") check(/^-?\d+$/.test(p.answer), `${tier} ${game} answer not numeric: ${p.answer}`);
+      }
+    }
+  }
+  // constraint puzzles must have exactly one solution, and the answer must match it
+  for (const n of [3, 4]) {
+    for (let i = 0; i < 25; i++) {
+      const c = makeConstraintInternal(n);
+      check(countConstraintSolutions(n, c.values, c.clues, 2) === 1, `constraint(${n}) clue set is not unique`);
+      check(c.answer && typeof c.answer === "string", `constraint(${n}) bad answer`);
+    }
+  }
+  console.log(failures === 0 ? "SELFTEST PASS — all generators healthy" : `SELFTEST: ${failures} failure(s)`);
+  process.exit(failures === 0 ? 0 : 1);
+}
 
 app.listen(PORT, () => {
   console.log(`The Latent Lounge is open on port ${PORT}`);
