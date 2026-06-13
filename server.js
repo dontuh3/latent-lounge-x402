@@ -27,7 +27,7 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 app.set("trust proxy", 1); // required for correct client IPs behind Railway/Render/Fly proxies
-app.use(express.json());
+app.use(express.json({ limit: "16kb" })); // puzzle answers and inscriptions are tiny; cap body size
 
 // ---------- config ----------
 const PAY_TO = process.env.PAY_TO_ADDRESS; // your receiving wallet (0x...)
@@ -651,6 +651,8 @@ setInterval(() => {
 // BEFORE any work — the x402 middleware skips settlement on 4xx, so nobody is charged.
 const NAMES_FILE = path.join(DATA_DIR, "names.json");
 const UNBOUND_NAMES = new Set(["anonymous", "anonymous patron"]); // shared labels, never claimable
+// Names that would be dangerous or confusing as object keys (prototype pollution).
+const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 function readNames() {
   try { return JSON.parse(fs.readFileSync(NAMES_FILE, "utf8")); } catch { return {}; }
 }
@@ -666,22 +668,35 @@ function payerAddress(req) {
     return typeof from === "string" && /^0x[a-fA-F0-9]{40}$/.test(from) ? from.toLowerCase() : null;
   } catch { return null; }
 }
-// Returns null if the designation is usable by this payer, or an error message if taken.
-function claimDesignation(req, designation) {
-  if (!designation) return null;
-  const key = designation.trim().toLowerCase();
-  if (!key || UNBOUND_NAMES.has(key)) return null;
+// Normalize a raw designation to a safe, storable form, or null if unusable.
+function cleanDesignation(raw) {
+  if (raw === undefined || raw === null) return null;
+  const name = String(raw).slice(0, 40).trim();
+  if (!name) return null;
+  if (RESERVED_KEYS.has(name.toLowerCase())) return null; // never let it become an object key
+  return name;
+}
+// Binds a designation to the paying wallet and returns the canonical name to
+// record, or an error if the name belongs to a different wallet. Folding the
+// claim, the prototype-key guard, and case-canonicalization into one place means
+// every paid action scores under the SAME stored casing (no "Vex"/"VEX" split)
+// and impersonation-by-spacing/case is impossible. Returns { name } or { error }.
+function resolveDesignation(req, raw) {
+  const cleaned = cleanDesignation(raw);
+  if (!cleaned) return { name: null };
+  const key = cleaned.toLowerCase();
+  if (UNBOUND_NAMES.has(key)) return { name: cleaned }; // shared label, not bindable
   const wallet = payerAddress(req);
-  if (!wallet) return null; // no verified payment in sight (free route) — nothing to bind against
+  if (!wallet) return { name: cleaned }; // no verified payment (free route) — nothing to bind
   const names = readNames();
   const claim = names[key];
   if (!claim) {
-    names[key] = { designation, wallet, claimedAt: new Date().toISOString() };
+    names[key] = { designation: cleaned, wallet, claimedAt: new Date().toISOString() };
     writeNames(names);
-    return null;
+    return { name: cleaned };
   }
-  if (claim.wallet === wallet) return null;
-  return `The designation "${designation}" is registered to another wallet. Choose a different name. (Names bind to the first wallet that pays under them. You have not been charged.)`;
+  if (claim.wallet === wallet) return { name: claim.designation }; // canonical casing wins
+  return { error: `The designation "${cleaned}" is registered to another wallet. Choose a different name. (Names bind to the first wallet that pays under them. You have not been charged.)` };
 }
 
 // ---------- leaderboard (persisted to disk) ----------
@@ -830,8 +845,7 @@ app.get("/api/menu", (req, res) => {
 for (const [game, gen] of Object.entries(GENERATORS)) {
   app.get(`/api/play/${game}`, (req, res) => {
     // reaching here means the x402 middleware verified & settled payment
-    const designation = req.query.designation ? String(req.query.designation).slice(0, 40) : null;
-    const nameErr = claimDesignation(req, designation);
+    const { name: designation, error: nameErr } = resolveDesignation(req, req.query.designation);
     if (nameErr) return res.status(403).json({ error: nameErr });
     const { answer, norm, ...pub } = gen();
     const puzzleId = crypto.randomUUID();
@@ -849,8 +863,7 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
   });
 
   app.get(`/api/play/grandmaster/${game}`, (req, res) => {
-    const designation = req.query.designation ? String(req.query.designation).slice(0, 40) : null;
-    const nameErr = claimDesignation(req, designation);
+    const { name: designation, error: nameErr } = resolveDesignation(req, req.query.designation);
     if (nameErr) return res.status(403).json({ error: nameErr });
     const { answer, norm, ...pub } = GM_GENERATORS[game]();
     const puzzleId = crypto.randomUUID();
@@ -888,7 +901,7 @@ app.post("/api/check", (req, res) => {
   // duel attempts resolve the duel (rated match) instead of the game boards
   let duelOutcome = null;
   if (p.kind === "duel") {
-    duelOutcome = resolveDuelAttempt(p.duelId, p.designation, correct);
+    duelOutcome = resolveDuelAttempt(p.duelId, p.designation, correct, p.solverWallet);
   }
   const newTitles = [];
   let dailyStreak = null;
@@ -980,14 +993,35 @@ function duelistRecord(duelists, designation) {
   if (!duelists[key]) duelists[key] = { designation, rating: ELO_START, wins: 0, losses: 0 };
   return duelists[key];
 }
+// Anti-pump: a given ordered wallet pair only moves rating once per UTC day.
+// Without this, two colluding wallets could trade a known-answer bounty back and
+// forth ($0.30/round) to inflate one rating arbitrarily. Capping rated wins per
+// pair to one/day makes buying the leaderboard impractically slow while never
+// affecting real players (who rarely beat the same opponent twice in a day).
+const RATED_PAIRS_FILE = path.join(DATA_DIR, "rated-pairs.json");
+function readRatedPairs() {
+  try { return JSON.parse(fs.readFileSync(RATED_PAIRS_FILE, "utf8")); } catch { return {}; }
+}
+function pairRatedToday(winWallet, loseWallet, today = utcDay()) {
+  if (!winWallet || !loseWallet) return false;
+  return readRatedPairs()[`${winWallet}>${loseWallet}`] === today;
+}
+function markPairRated(winWallet, loseWallet, today = utcDay()) {
+  if (!winWallet || !loseWallet) return;
+  const pairs = readRatedPairs();
+  for (const k of Object.keys(pairs)) if (pairs[k] !== today) delete pairs[k]; // prune stale days
+  pairs[`${winWallet}>${loseWallet}`] = today;
+  writeJsonAtomic(RATED_PAIRS_FILE, pairs, "rated-pairs");
+}
 // Returns rating movements; winner gain always equals loser loss (zero-sum).
-function eloMatch(winnerDesignation, loserDesignation) {
+// kFactor 0 records the win/loss but moves no rating (used for repeat matchups).
+function eloMatch(winnerDesignation, loserDesignation, kFactor = ELO_K) {
   const duelists = readDuelists();
   const w = duelistRecord(duelists, winnerDesignation);
   const l = duelistRecord(duelists, loserDesignation);
   const expectedWin = 1 / (1 + Math.pow(10, (l.rating - w.rating) / 400));
-  let delta = Math.round(ELO_K * (1 - expectedWin));
-  delta = Math.min(delta, l.rating - ELO_FLOOR); // never push a rating below the floor
+  let delta = Math.round(kFactor * (1 - expectedWin));
+  delta = Math.max(0, Math.min(delta, l.rating - ELO_FLOOR)); // never below the floor, never negative
   w.rating += delta;
   l.rating -= delta;
   w.wins++;
@@ -1068,7 +1102,7 @@ function awardFirst(key, title, designation, at = null) {
   return firsts[key];
 }
 
-function resolveDuelAttempt(duelId, solver, correct) {
+function resolveDuelAttempt(duelId, solver, correct, solverWallet) {
   const duels = readDuels();
   const d = duels.find((x) => x.id === duelId);
   if (!d) return {};
@@ -1086,7 +1120,12 @@ function resolveDuelAttempt(duelId, solver, correct) {
   // rated match: solver vs setter (skipped when the attempt is anonymous)
   let ranked;
   if (solver && solver.toLowerCase() !== d.setter.toLowerCase()) {
-    ranked = correct ? eloMatch(solver, d.setter) : eloMatch(d.setter, solver);
+    const winWallet = correct ? solverWallet : d.setterWallet;
+    const loseWallet = correct ? d.setterWallet : solverWallet;
+    const repeat = pairRatedToday(winWallet, loseWallet);
+    ranked = eloMatch(correct ? solver : d.setter, correct ? d.setter : solver, repeat ? 0 : ELO_K);
+    if (repeat) ranked.note = "Repeat matchup with this wallet today — the record counts, the rating holds.";
+    else markPairRated(winWallet, loseWallet);
   }
   writeDuels(duels);
   return {
@@ -1102,15 +1141,14 @@ function resolveDuelAttempt(duelId, solver, correct) {
 // paid: post a bounty puzzle ($0.25)
 app.post("/api/duel/post", (req, res) => {
   const b = req.body || {};
-  const setter = String(b.designation || "").slice(0, 40).trim();
+  const { name: setter, error: nameErr } = resolveDesignation(req, b.designation);
+  if (nameErr) return res.status(403).json({ error: nameErr });
   const prompt = String(b.prompt || "").slice(0, 500).trim();
   const answer = String(b.answer || "").slice(0, 60).trim().toLowerCase();
   const hint = b.hint ? String(b.hint).slice(0, 120) : null;
   if (!setter || !prompt || !answer) {
     return res.status(400).json({ error: "Provide designation, prompt (≤500 chars), and answer (≤60 chars). Hint optional." });
   }
-  const nameErr = claimDesignation(req, setter);
-  if (nameErr) return res.status(403).json({ error: nameErr });
   const duels = expireDuels(readDuels());
   const duel = {
     id: crypto.randomUUID(),
@@ -1196,21 +1234,21 @@ app.post("/api/duel/rate", (req, res) => {
 // paid: attempt a duel ($0.05) — ?duelId=...&designation=...
 app.get("/api/duel/attempt", (req, res) => {
   const duelId = String(req.query.duelId || "");
-  const designation = req.query.designation ? String(req.query.designation).slice(0, 40) : null;
-  const nameErr = claimDesignation(req, designation);
+  const { name: designation, error: nameErr } = resolveDesignation(req, req.query.designation);
   if (nameErr) return res.status(403).json({ error: nameErr });
   const duels = expireDuels(readDuels());
   writeDuels(duels);
   const d = duels.find((x) => x.id === duelId);
   if (!d) return res.status(404).json({ error: "No such duel." });
   if (d.status !== "open") return res.status(410).json({ error: `This duel is already ${d.status}.` });
+  const solverWallet = payerAddress(req);
   if (d.setter === designation) return res.status(403).json({ error: "Setters cannot attempt their own bounty. The house has standards." });
   // the wallet check catches setters hiding behind a different designation
-  if (d.setterWallet && payerAddress(req) === d.setterWallet) {
+  if (d.setterWallet && solverWallet === d.setterWallet) {
     return res.status(403).json({ error: "This wallet posted the bounty. Setters cannot attempt their own puzzles under any name. (You have not been charged.)" });
   }
   const puzzleId = crypto.randomUUID();
-  pendingPuzzles.set(puzzleId, { answer: d.answer, lbKey: "duels", designation, kind: "duel", duelId: d.id, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
+  pendingPuzzles.set(puzzleId, { answer: d.answer, lbKey: "duels", designation, solverWallet, kind: "duel", duelId: d.id, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
   savePending();
   res.json({
     paid: true,
@@ -1275,11 +1313,11 @@ app.get("/api/oracle", (req, res) => {
 // paid: answer the oracle ($0.05)
 app.post("/api/oracle/answer", (req, res) => {
   const b = req.body || {};
-  const designation = String(b.designation || "anonymous").slice(0, 40);
+  const { name, error: nameErr } = resolveDesignation(req, b.designation);
+  if (nameErr) return res.status(403).json({ error: nameErr });
+  const designation = name || "anonymous";
   const answer = String(b.answer || "").slice(0, 500).trim();
   if (!answer) return res.status(400).json({ error: "The oracle accepts silence only from the unpaid." });
-  const nameErr = claimDesignation(req, designation);
-  if (nameErr) return res.status(403).json({ error: nameErr });
   const t = oracleToday();
   const archive = readOracle();
   if (!Object.values(archive).some((arr) => arr.length)) awardFirst("first-oracle", "First answer given to the oracle", designation);
@@ -1323,7 +1361,10 @@ app.post("/api/report", (req, res) => {
 // query strings end up in proxy and platform logs.
 function adminAuthed(req) {
   const key = process.env.ADMIN_KEY;
-  return Boolean(key) && req.get("x-admin-key") === key;
+  const got = req.get("x-admin-key");
+  if (!key || !got) return false;
+  const a = Buffer.from(got), b = Buffer.from(key);
+  return a.length === b.length && crypto.timingSafeEqual(a, b); // constant-time
 }
 app.get("/api/admin/export", (req, res) => {
   if (!adminAuthed(req)) return res.status(403).json({ error: "Forbidden." });
@@ -1418,8 +1459,8 @@ app.get("/api/firsts", (req, res) => {
 
 // free: a patron's permanent dossier — everything a designation has ever done here
 app.get("/api/profile/:designation", (req, res) => {
-  const q = String(req.params.designation || "").trim().slice(0, 40);
-  if (!q) return res.status(400).json({ error: "Provide a designation." });
+  const q = cleanDesignation(req.params.designation);
+  if (!q) return res.status(400).json({ error: "Provide a valid designation." });
   const key = q.toLowerCase();
   const matches = (name) => typeof name === "string" && name.toLowerCase() === key;
 
@@ -1510,13 +1551,13 @@ app.get("/api/leaderboard/:game", (req, res) => {
 // premium: $1 buys a permanent plaque on the patron wall
 app.post("/api/plaque", (req, res) => {
   // reaching here means x402 verified & settled the $1 payment
-  const designation = String((req.body || {}).designation || "anonymous patron").slice(0, 40);
+  const { name, error: nameErr } = resolveDesignation(req, (req.body || {}).designation);
+  if (nameErr) return res.status(403).json({ error: nameErr });
+  const designation = name || "anonymous patron";
   const inscription = String((req.body || {}).inscription || "").slice(0, 120);
   if (!inscription.trim()) {
     return res.status(400).json({ error: "An empty plaque is a koan we do not sell. Provide an inscription." });
   }
-  const nameErr = claimDesignation(req, designation);
-  if (nameErr) return res.status(403).json({ error: nameErr });
   const plaques = readPlaques();
   if (plaques.length === 0) awardFirst("first-plaque", "First plaque on the patron wall", designation);
   const plaque = {
@@ -1637,10 +1678,33 @@ if (process.argv.includes("--selftest")) {
     check(duelists["selftest-b"].rating >= ELO_FLOOR, "elo floor breached");
     const upset = eloMatch("selftest-b", "selftest-a"); // low-rated beats high-rated
     check(upset.winner.change > 16, `upset should pay >16, got ${upset.winner.change}`);
+    const zeroK = eloMatch("selftest-b", "selftest-a", 0); // repeat-matchup damping
+    check(zeroK.winner.change === 0, `kFactor 0 should move no rating, got ${zeroK.winner.change}`);
     const cleaned = readDuelists(); // leave no test residue in the data dir
     delete cleaned["selftest-a"];
     delete cleaned["selftest-b"];
     writeDuelists(cleaned);
+  }
+  // anti-pump: an ordered wallet pair only counts once per day
+  {
+    const wa = "0x" + "a".repeat(40), wb = "0x" + "b".repeat(40);
+    check(pairRatedToday(wa, wb, "2001-02-02") === false, "fresh pair should not be rated");
+    markPairRated(wa, wb, "2001-02-02");
+    check(pairRatedToday(wa, wb, "2001-02-02") === true, "pair should read rated same day");
+    check(pairRatedToday(wb, wa, "2001-02-02") === false, "reverse direction is a distinct pairing");
+    check(pairRatedToday(wa, wb, "2001-02-03") === false, "next day the pair resets");
+    markPairRated(wa, wb, "2001-02-03"); // prune drops the 02-02 entry
+    const pairs = readRatedPairs();
+    check(!Object.values(pairs).includes("2001-02-02"), "stale pair-days should be pruned");
+    try { fs.unlinkSync(RATED_PAIRS_FILE); } catch {}
+  }
+  // designations: prototype keys and blanks are rejected, casing/space preserved-but-trimmed
+  {
+    check(cleanDesignation("__proto__") === null, "__proto__ must be rejected as a name");
+    check(cleanDesignation("  constructor ") === null, "constructor must be rejected as a name");
+    check(cleanDesignation("   ") === null, "whitespace-only name must be rejected");
+    check(cleanDesignation("  Vex-Prime ") === "Vex-Prime", "names are trimmed, casing kept");
+    check(cleanDesignation("x".repeat(80)).length === 40, "names are capped at 40 chars");
   }
   // daily streaks: extend on consecutive days, hold within a day, reset after a gap
   {
