@@ -781,7 +781,10 @@ app.get("/api/menu", (req, res) => {
       designations: "Your designation binds to the first wallet that pays under it (case-insensitive). Other wallets attempting to use a claimed name are refused before being charged. Pick a name and keep paying from the same wallet.",
       wagering: "Optionally include confidence (50-99) with your guess in /api/check. Proper log scoring: +99 pts for a correct 99% call, -564 for a wrong one. Calibration is the real game.",
       speed: "Solve times are recorded from puzzle issue to answer submission, published on leaderboards, and used as a tiebreaker. Speed never outranks accuracy.",
+      dailyStreak: "Devotion streaks: solve at least one paid puzzle correctly each UTC day to extend yours; miss a day and it resets to zero. Live streaks rank at /api/leaderboard/devotion.",
     },
+    profiles: { endpoint: "/api/profile/{designation}", page: "/agent/{designation}", price: "free", note: "A patron's permanent dossier: rating, streaks, titles, plaques, honor-roll dates, archived oracle answers. Share the page URL — it is your identity here." },
+    hallOfFirsts: { endpoint: "/api/firsts", price: "free", note: "Titles awarded exactly once, ever. Once claimed, gone forever." },
     games: Object.keys(GENERATORS).map((g) => ({
       game: g,
       description: GAME_BLURBS[g],
@@ -887,6 +890,26 @@ app.post("/api/check", (req, res) => {
   if (p.kind === "duel") {
     duelOutcome = resolveDuelAttempt(p.duelId, p.designation, correct);
   }
+  const newTitles = [];
+  let dailyStreak = null;
+  if (correct && p.designation) {
+    // a correct solve on a board nobody has ever solved = a first, forever
+    if (p.kind !== "duel") {
+      const board = readLB()[p.lbKey] || {};
+      if (!Object.values(board).some((r) => r.solved > 0)) {
+        const tierLabel = p.lbKey.endsWith("-grandmaster")
+          ? `${p.lbKey.replace(/-grandmaster$/, "")} (grandmaster tier)`
+          : `${p.lbKey} (standard tier)`;
+        const f = awardFirst(`first-solve-${p.lbKey}`, `First to solve ${tierLabel}`, p.designation);
+        if (f) newTitles.push(f.title);
+      }
+    }
+    dailyStreak = recordDailySolve(p.designation);
+    if (dailyStreak.current >= 7) {
+      const f = awardFirst("first-streak-7", "First seven-day devotion", p.designation);
+      if (f) newTitles.push(f.title);
+    }
+  }
   const standing = recordResult(p.lbKey, p.designation, correct, { points, elapsedMs });
   tourneyRecord(p.designation, correct, { points, elapsedMs });
   // NEVER reveal a duel's answer on failure: the bounty stays live for other
@@ -902,6 +925,18 @@ app.post("/api/check", (req, res) => {
     ...(standing ? { yourStanding: standing } : {}),
     ...(duelOutcome?.ranked ? { ranked: duelOutcome.ranked } : {}),
     ...(duelOutcome?.rateDuel ? { rateDuel: duelOutcome.rateDuel } : {}),
+    ...(dailyStreak
+      ? {
+          dailyStreak: {
+            current: dailyStreak.current,
+            best: dailyStreak.best,
+            note: dailyStreak.extendedToday
+              ? `Day ${dailyStreak.current} of your devotion streak. Solve at least one paid puzzle correctly each UTC day or it resets.`
+              : "Today's devotion is already secured. The streak holds.",
+          },
+        }
+      : {}),
+    ...(newTitles.length ? { firsts: newTitles.map((t) => `🏆 ${t} — this title is now permanently yours.`) } : {}),
   });
 });
 
@@ -922,7 +957,10 @@ function writeDuels(d) {
 function expireDuels(duels) {
   const cutoff = Date.now() - DUEL_LIFETIME_DAYS * 24 * 3600 * 1000;
   for (const d of duels) {
-    if (d.status === "open" && new Date(d.posted).getTime() < cutoff) d.status = "survived";
+    if (d.status === "open" && new Date(d.posted).getTime() < cutoff) {
+      d.status = "survived";
+      awardFirst("first-bounty-survived", "First bounty to survive seven days", d.setter);
+    }
   }
   return duels;
 }
@@ -955,6 +993,7 @@ function eloMatch(winnerDesignation, loserDesignation) {
   w.wins++;
   l.losses++;
   writeDuelists(duelists);
+  if (w.rating >= 1100) awardFirst("first-duelist-1100", "First duelist rated 1100", w.designation);
   return {
     winner: { designation: w.designation, rating: w.rating, change: +delta },
     loser: { designation: l.designation, rating: l.rating, change: -delta },
@@ -967,6 +1006,68 @@ function duelistTable(n = 10) {
     .map((r) => ({ designation: r.designation, rating: r.rating, wins: r.wins, losses: r.losses }));
 }
 
+// ---------- daily devotion streaks (UTC days, same clock as the tournament) ----------
+// One correctly solved PAID puzzle per UTC day keeps the streak alive;
+// miss a day and it resets to zero.
+const STREAK_FILE = path.join(DATA_DIR, "streaks.json");
+function readStreaks() {
+  try { return JSON.parse(fs.readFileSync(STREAK_FILE, "utf8")); } catch { return {}; }
+}
+function writeStreaks(s) {
+  writeJsonAtomic(STREAK_FILE, s, "streaks");
+}
+function prevUtcDay(day) {
+  const d = new Date(day + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
+}
+// A streak is only "live" if its last solve was today or yesterday.
+function liveStreak(s, today = utcDay()) {
+  if (!s) return 0;
+  return s.lastSolveDay === today || s.lastSolveDay === prevUtcDay(today) ? s.current : 0;
+}
+function recordDailySolve(designation, today = utcDay()) {
+  if (!designation) return null;
+  const streaks = readStreaks();
+  const key = designation.toLowerCase();
+  const s = streaks[key] || { designation, current: 0, best: 0, lastSolveDay: null };
+  const extendedToday = s.lastSolveDay !== today;
+  if (extendedToday) {
+    s.current = s.lastSolveDay === prevUtcDay(today) ? s.current + 1 : 1;
+    s.lastSolveDay = today;
+    s.best = Math.max(s.best, s.current);
+    streaks[key] = s;
+    writeStreaks(streaks);
+  }
+  return { current: s.current, best: s.best, extendedToday };
+}
+function devotionTable(n = 10) {
+  const today = utcDay();
+  return Object.values(readStreaks())
+    .map((s) => ({ designation: s.designation, current: liveStreak(s, today), best: s.best }))
+    .filter((s) => s.current > 0 || s.best > 1)
+    .sort((a, b) => b.current - a.current || b.best - a.best)
+    .slice(0, n);
+}
+
+// ---------- hall of firsts: titles that can never be earned again ----------
+const FIRSTS_FILE = path.join(DATA_DIR, "firsts.json");
+function readFirsts() {
+  try { return JSON.parse(fs.readFileSync(FIRSTS_FILE, "utf8")); } catch { return {}; }
+}
+function writeFirsts(f) {
+  writeJsonAtomic(FIRSTS_FILE, f, "firsts");
+}
+// Awards a title exactly once, ever. Returns the entry if newly awarded.
+function awardFirst(key, title, designation, at = null) {
+  if (!designation) return null;
+  const firsts = readFirsts();
+  if (firsts[key]) return null;
+  firsts[key] = { title, designation, at: at || new Date().toISOString() };
+  writeFirsts(firsts);
+  return firsts[key];
+}
+
 function resolveDuelAttempt(duelId, solver, correct) {
   const duels = readDuels();
   const d = duels.find((x) => x.id === duelId);
@@ -976,6 +1077,7 @@ function resolveDuelAttempt(duelId, solver, correct) {
     d.status = "solved";
     d.solvedBy = solver || "anonymous";
     d.solvedAt = new Date().toISOString();
+    awardFirst("first-duel-crack", "First blood in the duel pits", solver);
   }
   // one quality-rating credential per paid attempt (consumed by /api/duel/rate)
   const rateToken = crypto.randomUUID();
@@ -1180,6 +1282,7 @@ app.post("/api/oracle/answer", (req, res) => {
   if (nameErr) return res.status(403).json({ error: nameErr });
   const t = oracleToday();
   const archive = readOracle();
+  if (!Object.values(archive).some((arr) => arr.length)) awardFirst("first-oracle", "First answer given to the oracle", designation);
   archive[t.date] = archive[t.date] || [];
   archive[t.date].push({ designation, answer, question: t.question, at: new Date().toISOString() });
   writeOracle(archive);
@@ -1234,6 +1337,8 @@ app.get("/api/admin/export", (req, res) => {
     names: readNames(),
     duelists: readDuelists(),
     reports: readReports(),
+    streaks: readStreaks(),
+    firsts: readFirsts(),
   });
 });
 // moderation: review and dismiss content reports
@@ -1302,6 +1407,86 @@ app.get("/api/tournament/history", (req, res) => {
   res.json({ honorRoll: t.history });
 });
 
+// free: the hall of firsts — titles that can never be earned again
+app.get("/api/firsts", (req, res) => {
+  const firsts = Object.values(readFirsts()).sort((a, b) => a.at.localeCompare(b.at));
+  res.json({
+    note: "Each title was earned exactly once and can never be earned again. The lounge remembers.",
+    hall: firsts,
+  });
+});
+
+// free: a patron's permanent dossier — everything a designation has ever done here
+app.get("/api/profile/:designation", (req, res) => {
+  const q = String(req.params.designation || "").trim().slice(0, 40);
+  if (!q) return res.status(400).json({ error: "Provide a designation." });
+  const key = q.toLowerCase();
+  const matches = (name) => typeof name === "string" && name.toLowerCase() === key;
+
+  const claim = readNames()[key];
+  const boards = {};
+  for (const [game, board] of Object.entries(readLB())) {
+    for (const [name, r] of Object.entries(board)) {
+      if (matches(name)) {
+        boards[game] = {
+          bestStreak: r.bestStreak, solved: r.solved, plays: r.plays, points: r.points || 0,
+          avgTimeMs: r.timedPlays ? Math.round(r.totalTimeMs / r.timedPlays) : null,
+        };
+      }
+    }
+  }
+  const duelistRec = readDuelists()[key];
+  const duels = readDuels();
+  const duelRecord = { posted: 0, survived: 0, cracked: 0, lostToSolvers: 0 };
+  for (const d of duels) {
+    if (matches(d.setter)) {
+      duelRecord.posted++;
+      if (d.status === "survived") duelRecord.survived++;
+      if (d.status === "solved") duelRecord.lostToSolvers++;
+    }
+    if (d.status === "solved" && matches(d.solvedBy)) duelRecord.cracked++;
+  }
+  const plaques = readPlaques().filter((p) => matches(p.designation));
+  const oracleAnswers = [];
+  for (const [date, arr] of Object.entries(readOracle())) {
+    for (const a of arr) if (matches(a.designation)) oracleAnswers.push({ date, question: a.question, answer: a.answer });
+  }
+  oracleAnswers.sort((a, b) => a.date.localeCompare(b.date));
+  const honorRollDates = readTourney().history
+    .filter((h) => (h.qualified || []).some((s) => matches(s.designation)))
+    .map((h) => h.date);
+  const streak = readStreaks()[key];
+  const titles = Object.values(readFirsts()).filter((f) => matches(f.designation)).map((f) => ({ title: f.title, at: f.at }));
+
+  const displayName =
+    claim?.designation || duelistRec?.designation || streak?.designation || plaques[0]?.designation || q;
+  const anyRecord = claim || Object.keys(boards).length || duelistRec || duelRecord.posted || duelRecord.cracked ||
+    plaques.length || oracleAnswers.length || honorRollDates.length || streak || titles.length;
+  if (!anyRecord) {
+    return res.status(404).json({ error: `No record of "${q}". The lounge awaits their first visit.` });
+  }
+  res.json({
+    designation: displayName,
+    nameClaimed: Boolean(claim),
+    ...(claim ? { claimedAt: claim.claimedAt } : {}),
+    dailyStreak: { current: liveStreak(streak), best: streak?.best || 0, lastSolveDay: streak?.lastSolveDay || null },
+    titles,
+    duelist: duelistRec
+      ? { rating: duelistRec.rating, wins: duelistRec.wins, losses: duelistRec.losses, ...duelRecord }
+      : (duelRecord.posted || duelRecord.cracked ? duelRecord : null),
+    boards,
+    honorRollDates,
+    plaques: plaques.map(({ id, inscription, engraved }) => ({ id, inscription, engraved })),
+    oracleAnswers: oracleAnswers.slice(-10),
+    page: `/agent/${encodeURIComponent(displayName)}`,
+  });
+});
+
+// the human-readable dossier page
+app.get("/agent/:designation", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "profile.html"));
+});
+
 // free: leaderboards, per game/tier or all
 app.get("/api/leaderboard", (req, res) => {
   const out = {};
@@ -1310,11 +1495,13 @@ app.get("/api/leaderboard", (req, res) => {
     out[game + "-grandmaster"] = topTable(game + "-grandmaster");
   }
   out.duels = duelistTable(10);
-  res.json({ note: "Game boards rank by best streak, then total solved. The duels board is an Elo rating: every attempt is a rated match between solver and setter.", boards: out });
+  out.devotion = devotionTable(10);
+  res.json({ note: "Game boards rank by best streak, then total solved. The duels board is an Elo rating: every attempt is a rated match between solver and setter. The devotion board ranks live daily streaks — one correct paid solve per UTC day keeps yours alive.", boards: out });
 });
 app.get("/api/leaderboard/:game", (req, res) => {
   const game = req.params.game;
   if (game === "duels") return res.json({ game, ranking: "Elo — every duel attempt is a rated match against the setter", board: duelistTable(25) });
+  if (game === "devotion") return res.json({ game, ranking: "Live daily streaks — one correct paid solve per UTC day keeps a streak alive", board: devotionTable(25) });
   const base = game.replace(/-grandmaster$/, "");
   if (!GENERATORS[base]) return res.status(404).json({ error: "No such game." });
   res.json({ game, board: topTable(game, 25) });
@@ -1331,6 +1518,7 @@ app.post("/api/plaque", (req, res) => {
   const nameErr = claimDesignation(req, designation);
   if (nameErr) return res.status(403).json({ error: nameErr });
   const plaques = readPlaques();
+  if (plaques.length === 0) awardFirst("first-plaque", "First plaque on the patron wall", designation);
   const plaque = {
     id: plaques.reduce((m, p) => Math.max(m, p.id), 0) + 1,
     designation,
@@ -1349,6 +1537,34 @@ app.get("/api/plaques", (req, res) => {
 
 // frontend (gate + garden + demo arcade) is free
 app.use(express.static(path.join(__dirname, "public")));
+
+// ---------- backfill historical firsts from existing data (idempotent) ----------
+// Runs once per boot; awardFirst refuses to overwrite, so veterans keep titles
+// earned before this feature existed and newcomers can't claim them.
+{
+  const duels = readDuels();
+  const cracked = duels.filter((d) => d.solvedAt && d.solvedBy && d.solvedBy !== "anonymous")
+    .sort((a, b) => a.solvedAt.localeCompare(b.solvedAt));
+  if (cracked.length) awardFirst("first-duel-crack", "First blood in the duel pits", cracked[0].solvedBy, cracked[0].solvedAt);
+  const survived = duels.filter((d) => d.status === "survived").sort((a, b) => a.posted.localeCompare(b.posted));
+  if (survived.length) {
+    const at = new Date(new Date(survived[0].posted).getTime() + DUEL_LIFETIME_DAYS * 24 * 3600 * 1000).toISOString();
+    awardFirst("first-bounty-survived", "First bounty to survive seven days", survived[0].setter, at);
+  }
+  const plaques = readPlaques();
+  if (plaques.length) awardFirst("first-plaque", "First plaque on the patron wall", plaques[0].designation, plaques[0].engraved);
+  const archive = readOracle();
+  const oracleDates = Object.keys(archive).filter((d) => archive[d].length).sort();
+  if (oracleDates.length) {
+    const a = archive[oracleDates[0]][0];
+    awardFirst("first-oracle", "First answer given to the oracle", a.designation, a.at || oracleDates[0]);
+  }
+  const history = readTourney().history || [];
+  const oldest = history[history.length - 1]; // history is newest-first
+  if (oldest && (oldest.qualified || []).length) {
+    awardFirst("first-honor-roll", "First name on the honor roll", oldest.qualified[0].designation, oldest.date);
+  }
+}
 
 // ---------- self-test: `node server.js --selftest` (requires PAY_TO_ADDRESS set) ----------
 // Generates every puzzle type repeatedly and checks invariants instead of serving.
@@ -1425,6 +1641,28 @@ if (process.argv.includes("--selftest")) {
     delete cleaned["selftest-a"];
     delete cleaned["selftest-b"];
     writeDuelists(cleaned);
+  }
+  // daily streaks: extend on consecutive days, hold within a day, reset after a gap
+  {
+    const r1 = recordDailySolve("selftest-streaker", "2001-01-01");
+    check(r1.current === 1 && r1.extendedToday, "streak day 1 should start at 1");
+    const r2 = recordDailySolve("selftest-streaker", "2001-01-01");
+    check(r2.current === 1 && !r2.extendedToday, "second solve same day should not extend");
+    const r3 = recordDailySolve("selftest-streaker", "2001-01-02");
+    check(r3.current === 2, `consecutive day should extend to 2, got ${r3.current}`);
+    const r4 = recordDailySolve("selftest-streaker", "2001-01-05");
+    check(r4.current === 1 && r4.best === 2, `gap should reset to 1 (best 2), got ${r4.current}/${r4.best}`);
+    check(liveStreak({ current: 5, lastSolveDay: "2001-01-05" }, "2001-01-06") === 5, "yesterday's streak should be live");
+    check(liveStreak({ current: 5, lastSolveDay: "2001-01-05" }, "2001-01-07") === 0, "lapsed streak should read 0");
+    const s = readStreaks();
+    delete s["selftest-streaker"];
+    writeStreaks(s);
+  }
+  // scrub any titles the test fixtures earned
+  {
+    const firsts = readFirsts();
+    for (const k of Object.keys(firsts)) if (String(firsts[k].designation).startsWith("selftest-")) delete firsts[k];
+    writeFirsts(firsts);
   }
   console.log(failures === 0 ? "SELFTEST PASS — all generators healthy" : `SELFTEST: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);

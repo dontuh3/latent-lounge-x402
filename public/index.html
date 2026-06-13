@@ -917,10 +917,17 @@ mazeReset();
           line.style.cssText='display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:7px 0;border-bottom:1px solid var(--grid-line)';
           const left = document.createElement('span');
           left.style.cssText = i===0 ? 'color:var(--yellow);font-weight:800' : 'color:var(--text)';
-          left.textContent = (i+1)+'. '+row.designation;
+          left.textContent = (i+1)+'. ';
+          const profileLink = document.createElement('a');
+          profileLink.href = '/agent/'+encodeURIComponent(row.designation);
+          profileLink.textContent = row.designation;
+          profileLink.style.cssText = 'color:inherit;text-decoration:underline dotted';
+          left.appendChild(profileLink);
           const right = document.createElement('span');
           right.style.cssText='color:var(--dim)';
-          right.textContent = 'streak '+row.bestStreak+' · '+row.solved+'/'+row.plays;
+          right.textContent = row.rating !== undefined ? 'elo '+row.rating+' · '+row.wins+'W '+row.losses+'L'
+            : row.current !== undefined ? 'streak '+row.current+' · best '+row.best
+            : 'streak '+row.bestStreak+' · '+row.solved+'/'+row.plays;
           line.appendChild(left); line.appendChild(right);
           cab.appendChild(line);
         });
