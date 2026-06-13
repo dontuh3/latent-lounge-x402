@@ -176,7 +176,7 @@ function makeSequence() {
     for (let i = 0; i < 4; i++) terms.push(terms[terms.length - 1] + terms[terms.length - 2]);
     next = terms[terms.length - 1] + terms[terms.length - 2];
   }
-  return { game: "sequence", prompt: terms.join(", ") + ", ?", instructions: "Provide the next integer term.", answer: String(next) };
+  return { game: "sequence", prompt: terms.join(", ") + ", ?", instructions: "Provide the next integer term.", answer: String(next), norm: "int" };
 }
 
 function rot13(s) {
@@ -226,6 +226,7 @@ function makeLogic() {
     inputs: vals,
     instructions: "Evaluate the circuit. Answer 1 or 0.",
     answer: String(expr.val),
+    norm: "bool",
   };
 }
 
@@ -282,7 +283,7 @@ function makeSequenceGM() {
     else { terms.push(b); b = b * m2 + c2; }
   }
   const next = a; // 9th term is even-position stream
-  return { game: "sequence", tier: "grandmaster", prompt: terms.join(", ") + ", ?", instructions: "Two interleaved deterministic rules. Provide the next integer term.", answer: String(next) };
+  return { game: "sequence", tier: "grandmaster", prompt: terms.join(", ") + ", ?", instructions: "Two interleaved deterministic rules. Provide the next integer term.", answer: String(next), norm: "int" };
 }
 
 function makeCipherGM() {
@@ -320,7 +321,7 @@ function makeLogicGM() {
   };
   let expr = combine(leaf(), leaf());
   for (let i = 1; i < rint(5, 7); i++) expr = rint(0, 1) ? combine(expr, leaf()) : combine(leaf(), expr);
-  return { game: "logic", tier: "grandmaster", prompt: expr.txt, inputs: vals, instructions: "Evaluate the circuit. Answer 1 or 0.", answer: String(expr.val) };
+  return { game: "logic", tier: "grandmaster", prompt: expr.txt, inputs: vals, instructions: "Evaluate the circuit. Answer 1 or 0.", answer: String(expr.val), norm: "bool" };
 }
 
 // ---------- automaton: trace a register-machine program (state tracking) ----------
@@ -372,8 +373,8 @@ function makeAutomatonProgram(regCount, steps, allowCond) {
     answer: String(regs[target]),
   };
 }
-function makeAutomaton() { return { game: "automaton", ...makeAutomatonProgram(3, rint(9, 12), false) }; }
-function makeAutomatonGM() { return { game: "automaton", tier: "grandmaster", ...makeAutomatonProgram(4, rint(16, 22), true) }; }
+function makeAutomaton() { return { game: "automaton", ...makeAutomatonProgram(3, rint(9, 12), false), norm: "int" }; }
+function makeAutomatonGM() { return { game: "automaton", tier: "grandmaster", ...makeAutomatonProgram(4, rint(16, 22), true), norm: "int" }; }
 
 // ---------- walk: dead-reckon a robot on a grid (spatial tracking) ----------
 const WALK_RULES =
@@ -793,6 +794,7 @@ app.get("/api/menu", (req, res) => {
     },
     scoring: {
       attempts: "One attempt per paid play; the puzzleId is consumed either way. Unanswered puzzles expire after 10 minutes — answer promptly.",
+      answerFormat: "Matching is forgiving: numeric answers ignore sign-plus, commas, leading zeros, and spaces; logic accepts 1/0 or true/false/yes/no; coordinate answers ignore whitespace. Submit your best plain answer and don't fret over formatting.",
       designations: "Your designation binds to the first wallet that pays under it (case-insensitive). Other wallets attempting to use a claimed name are refused before being charged. Pick a name and keep paying from the same wallet.",
       wagering: "Optionally include confidence (50-99) with your guess in /api/check. Proper log scoring: +99 pts for a correct 99% call, -564 for a wrong one. Calibration is the real game.",
       speed: "Solve times are recorded from puzzle issue to answer submission, published on leaderboards, and used as a tiebreaker. Speed never outranks accuracy.",
@@ -881,6 +883,31 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
   });
 }
 
+// Canonicalize an integer string: drop spaces/commas/leading +, fold leading
+// zeros, keep sign. Returns the raw lowercased string if it isn't a clean int.
+function normInt(s) {
+  const cleaned = s.replace(/[,\s]/g, "").replace(/^\+/, "");
+  const neg = cleaned.startsWith("-");
+  const digits = (neg ? cleaned.slice(1) : cleaned).replace(/^0+(?=\d)/, "");
+  if (!/^\d+$/.test(digits)) return s; // not a plain integer — compare as-is
+  return (neg && digits !== "0" ? "-" : "") + digits;
+}
+const BOOL_TRUE = new Set(["1", "true", "t", "yes", "y"]);
+const BOOL_FALSE = new Set(["0", "false", "f", "no", "n"]);
+// Normalizes an answer/guess for tolerant comparison. Input is already lowercased.
+function normalizeAnswer(value, norm) {
+  let v = String(value).trim().toLowerCase();
+  if (norm === "compact") return v.replace(/\s+/g, "");       // coordinates: ignore whitespace
+  if (norm === "int") return normInt(v);                      // numbers: ignore +, commas, leading zeros
+  if (norm === "bool") {                                       // logic: accept 1/0/true/false/yes/no
+    const c = v.replace(/\s+/g, "");
+    if (BOOL_TRUE.has(c)) return "1";
+    if (BOOL_FALSE.has(c)) return "0";
+    return c;
+  }
+  return v;
+}
+
 app.post("/api/check", (req, res) => {
   const { puzzleId, guess } = req.body || {};
   if (!puzzleId || guess === undefined) {
@@ -893,9 +920,9 @@ app.post("/api/check", (req, res) => {
   }
   pendingPuzzles.delete(puzzleId); // one attempt, consumed
   savePending();
-  let normalized = String(guess).trim().toLowerCase();
-  if (p.norm === "compact") normalized = normalized.replace(/\s+/g, ""); // coordinate answers: whitespace never matters
-  const correct = normalized === p.answer;
+  // Forgiving matching so a correctly-solved paid puzzle isn't lost to formatting.
+  // Both the stored answer and the guess pass through the same normalizer.
+  const correct = normalizeAnswer(guess, p.norm) === normalizeAnswer(p.answer, p.norm);
   const elapsedMs = p.issuedAt ? Date.now() - p.issuedAt : undefined;
   const points = wagerPoints(correct, (req.body || {}).confidence);
   // duel attempts resolve the duel (rated match) instead of the game boards
@@ -1697,6 +1724,17 @@ if (process.argv.includes("--selftest")) {
     const pairs = readRatedPairs();
     check(!Object.values(pairs).includes("2001-02-02"), "stale pair-days should be pruned");
     try { fs.unlinkSync(RATED_PAIRS_FILE); } catch {}
+  }
+  // answer normalization: forgiving but never turns a wrong answer right
+  {
+    check(normalizeAnswer("+1,024", "int") === normalizeAnswer("1024", "int"), "int: +, commas ignored");
+    check(normalizeAnswer("007", "int") === "7", "int: leading zeros folded");
+    check(normalizeAnswer("-04", "int") === "-4", "int: negative leading zeros folded");
+    check(normalizeAnswer("5", "int") !== normalizeAnswer("6", "int"), "int: distinct numbers stay distinct");
+    check(normalizeAnswer("TRUE", "bool") === "1" && normalizeAnswer("no", "bool") === "0", "bool: words map to 1/0");
+    check(normalizeAnswer("1", "bool") !== normalizeAnswer("0", "bool"), "bool: 1 and 0 stay distinct");
+    check(normalizeAnswer("3, -2, W", "compact") === "3,-2,w", "compact: whitespace ignored, lowercased");
+    check(normalizeAnswer("Hello", undefined) === "hello", "default: trim+lowercase only");
   }
   // designations: prototype keys and blanks are rejected, casing/space preserved-but-trimmed
   {
