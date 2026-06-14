@@ -12,11 +12,11 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.0",
-    "x402-express": "latest",
-    "@coinbase/x402": "latest"
+    "x402-express": "1.2.0",
+    "@coinbase/x402": "2.1.0"
   },
   "optionalDependencies": {
     "viem": "^2.21.0",
-    "x402-fetch": "latest"
+    "x402-fetch": "1.2.0"
   }
 }

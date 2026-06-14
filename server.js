@@ -29,6 +29,28 @@ const app = express();
 app.set("trust proxy", 1); // required for correct client IPs behind Railway/Render/Fly proxies
 app.use(express.json({ limit: "16kb" })); // puzzle answers and inscriptions are tiny; cap body size
 
+// ---------- security headers (defense-in-depth; the app already escapes user content) ----------
+// Pragmatic CSP: the pages use inline <script> and inline onclick handlers, so script/style
+// must allow 'unsafe-inline'. We still restrict resource SOURCES, block framing (clickjacking),
+// and pin base-uri/object-src. nosniff + Referrer-Policy + HSTS are unconditional wins.
+app.use((req, res, next) => {
+  res.setHeader("Content-Security-Policy",
+    "default-src 'self'; " +
+    "script-src 'self' 'unsafe-inline'; " +
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
+    "font-src 'self' https://fonts.gstatic.com; " +
+    "img-src 'self' data:; " +
+    "connect-src 'self'; " +
+    "base-uri 'self'; " +
+    "frame-ancestors 'none'; " +
+    "object-src 'none'");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Strict-Transport-Security", "max-age=31536000");
+  next();
+});
+
 // ---------- config ----------
 const PAY_TO = process.env.PAY_TO_ADDRESS; // your receiving wallet (0x...)
 const NETWORK = process.env.NETWORK || "base-sepolia"; // "base-sepolia" (testnet) or "base" (mainnet)
@@ -1781,6 +1803,22 @@ if (process.argv.includes("--selftest")) {
   console.log(failures === 0 ? "SELFTEST PASS — all generators healthy" : `SELFTEST: ${failures} failure(s)`);
   process.exit(failures === 0 ? 0 : 1);
 }
+
+// ---------- terminal error handling ----------
+// Malformed JSON bodies and any thrown handler error land here: return a generic
+// JSON error (never a stack trace to the client) and log the detail server-side.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  const status = err && (err.type === "entity.parse.failed" || err.status === 400) ? 400 : 500;
+  if (status === 500) console.error("Unhandled error:", err);
+  res.status(status).json({
+    error: status === 400
+      ? "Malformed request body (expected valid JSON)."
+      : "Something went wrong. The proprietor has been notified.",
+  });
+});
+// A stray rejected promise shouldn't silently wedge the process.
+process.on("unhandledRejection", (reason) => console.error("Unhandled promise rejection:", reason));
 
 app.listen(PORT, () => {
   console.log(`The Latent Lounge is open on port ${PORT}`);
