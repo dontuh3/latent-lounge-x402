@@ -1,7 +1,19 @@
-﻿node_modules/
+node_modules/
 .env
-leaderboard.json
-tournament.json
+
+# Persisted runtime data (DATA_DIR). In production these live on the Railway
+# volume (/app/data); locally DATA_DIR defaults to the repo dir, so the server
+# and --selftest write them here. Never commit them — names.json maps
+# designations to wallet addresses, reports.json holds visitor reports, etc.
 duels.json
+duelists.json
+firsts.json
+leaderboard.json
+names.json
 oracle.json
+pending-puzzles.json
 plaques.json
+rated-pairs.json
+reports.json
+streaks.json
+tournament.json
