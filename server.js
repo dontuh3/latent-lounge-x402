@@ -476,8 +476,63 @@ function makeAutomatonProgram(regCount, steps, allowCond) {
     answer: String(regs[target]),
   };
 }
+// Re-execute a numbered program from a given initial state. Shared by the inverse
+// generator (uniqueness check) and the self-test, so they agree on semantics.
+function runAutomaton(lines, init) {
+  const regs = { ...init };
+  for (const line of lines) {
+    const ins = line.replace(/^\d+\.\s*/, "");
+    let m;
+    if ((m = ins.match(/^INC (\w)$/))) regs[m[1]]++;
+    else if ((m = ins.match(/^DEC (\w)$/))) regs[m[1]]--;
+    else if ((m = ins.match(/^ADD (\w) (\w)$/))) regs[m[1]] += regs[m[2]];
+    else if ((m = ins.match(/^SUB (\w) (\w)$/))) regs[m[1]] -= regs[m[2]];
+    else if ((m = ins.match(/^SWAP (\w) (\w)$/))) [regs[m[1]], regs[m[2]]] = [regs[m[2]], regs[m[1]]];
+    else if ((m = ins.match(/^COPY (\w) (\w)$/))) regs[m[1]] = regs[m[2]];
+    else if ((m = ins.match(/^IF (\w) > (\w) THEN SWAP (\w) (\w)$/))) { if (regs[m[1]] > regs[m[2]]) [regs[m[3]], regs[m[4]]] = [regs[m[4]], regs[m[3]]]; }
+    else if ((m = ins.match(/^IF (\w) IS EVEN THEN ADD (\w) (\w) ELSE DEC (\w)$/))) { if (((regs[m[1]] % 2) + 2) % 2 === 0) regs[m[2]] += regs[m[3]]; else regs[m[4]]--; }
+    else throw new Error(`unparseable instruction: ${ins}`);
+  }
+  return regs;
+}
+// INVERSE automaton: the program runs forward, but one register's INITIAL value is
+// hidden — given the others + a final register value, recover it. You can't just
+// run it forward; you must reason/search backward. Guaranteed unique by construction.
+function makeAutomatonInverse(regCount, steps, allowCond) {
+  const names = ["a", "b", "c", "d"].slice(0, regCount);
+  const RANGE = 10; // hidden initial value is an integer 0..9 (matches generation range)
+  for (let attempt = 0; attempt < 80; attempt++) {
+    const base = makeAutomatonProgram(regCount, steps, allowCond);
+    const program = base.prompt.program;
+    const init = base.prompt.initialRegisters;
+    const hidden = pick(names);
+    const target = pick(names);
+    const trueFinal = runAutomaton(program, init)[target];
+    let matches = 0;
+    for (let v = 0; v < RANGE && matches < 2; v++) {
+      if (runAutomaton(program, { ...init, [hidden]: v })[target] === trueFinal) matches++;
+    }
+    if (matches !== 1) continue; // hidden value not uniquely recoverable — regenerate
+    const known = { ...init };
+    delete known[hidden];
+    return {
+      game: "automaton",
+      tier: "grandmaster",
+      mode: "inverse",
+      prompt: { program, knownInitialRegisters: known, unknownRegister: hidden, observed: { register: target, finalValue: trueFinal } },
+      instructions: `${AUTOMATON_RULES} INVERSE PROBLEM: the initial value of register ${hidden} is hidden (an integer 0-${RANGE - 1}); every other register's initial value is given in knownInitialRegisters. Running the program to completion yields register ${target} = ${trueFinal}. Determine the hidden initial value of ${hidden}. Answer as a plain integer.`,
+      answer: String(init[hidden]),
+      norm: "int",
+    };
+  }
+  return { game: "automaton", tier: "grandmaster", ...makeAutomatonProgram(regCount, steps, allowCond), norm: "int" }; // rare fallback
+}
 function makeAutomaton() { return { game: "automaton", ...makeAutomatonProgram(3, rint(9, 12), false), norm: "int" }; }
-function makeAutomatonGM() { return { game: "automaton", tier: "grandmaster", ...makeAutomatonProgram(4, rint(16, 22), true), norm: "int" }; }
+function makeAutomatonGM() {
+  return rint(0, 1)
+    ? { game: "automaton", tier: "grandmaster", ...makeAutomatonProgram(4, rint(16, 22), true), norm: "int" } // forward (longer)
+    : makeAutomatonInverse(4, rint(16, 22), true);                                                            // inverse (backward reasoning)
+}
 
 // ---------- walk: dead-reckon a robot on a grid (spatial tracking) ----------
 const WALK_RULES =
@@ -1773,23 +1828,20 @@ if (process.argv.includes("--selftest")) {
         check(p.prompt !== undefined && p.instructions, `${tier} ${game}: missing prompt/instructions`);
         if (game === "automaton") {
           check(/^-?\d+$/.test(p.answer), `${tier} automaton answer not an integer: ${p.answer}`);
-          // independent re-execution from the published prompt text
-          const regs = { ...p.prompt.initialRegisters };
-          for (const line of p.prompt.program) {
-            const ins = line.replace(/^\d+\.\s*/, "");
-            let m;
-            if ((m = ins.match(/^INC (\w)$/))) regs[m[1]]++;
-            else if ((m = ins.match(/^DEC (\w)$/))) regs[m[1]]--;
-            else if ((m = ins.match(/^ADD (\w) (\w)$/))) regs[m[1]] += regs[m[2]];
-            else if ((m = ins.match(/^SUB (\w) (\w)$/))) regs[m[1]] -= regs[m[2]];
-            else if ((m = ins.match(/^SWAP (\w) (\w)$/))) [regs[m[1]], regs[m[2]]] = [regs[m[2]], regs[m[1]]];
-            else if ((m = ins.match(/^COPY (\w) (\w)$/))) regs[m[1]] = regs[m[2]];
-            else if ((m = ins.match(/^IF (\w) > (\w) THEN SWAP (\w) (\w)$/))) { if (regs[m[1]] > regs[m[2]]) [regs[m[3]], regs[m[4]]] = [regs[m[4]], regs[m[3]]]; }
-            else if ((m = ins.match(/^IF (\w) IS EVEN THEN ADD (\w) (\w) ELSE DEC (\w)$/))) { if (((regs[m[1]] % 2) + 2) % 2 === 0) regs[m[2]] += regs[m[3]]; else regs[m[4]]--; }
-            else check(false, `automaton: unparseable instruction "${ins}"`);
+          if (p.prompt.unknownRegister) {
+            // inverse: exactly one candidate initial value reproduces the observed final, and it is the answer
+            const { program, knownInitialRegisters: known, unknownRegister: h, observed } = p.prompt;
+            const sols = [];
+            try { for (let v = 0; v < 10; v++) if (runAutomaton(program, { ...known, [h]: v })[observed.register] === observed.finalValue) sols.push(v); }
+            catch (e) { check(false, `${tier} inverse automaton unparseable: ${e.message}`); }
+            check(sols.length === 1, `${tier} inverse automaton not uniquely solvable: ${sols.length} candidates`);
+            check(sols.length === 1 && String(sols[0]) === p.answer, `${tier} inverse automaton: solver gets [${sols}], answer says ${p.answer}`);
+          } else {
+            // forward: re-execute from the published initial state and check the named register
+            let regs; try { regs = runAutomaton(p.prompt.program, p.prompt.initialRegisters); } catch (e) { check(false, `${tier} automaton unparseable: ${e.message}`); regs = {}; }
+            const target = p.instructions.match(/register (\w) as/)[1];
+            check(String(regs[target]) === p.answer, `${tier} automaton: prompt re-execution gives ${regs[target]}, answer says ${p.answer}`);
           }
-          const target = p.instructions.match(/register (\w) as/)[1];
-          check(String(regs[target]) === p.answer, `${tier} automaton: prompt re-execution gives ${regs[target]}, answer says ${p.answer}`);
         }
         if (game === "walk") {
           const fmt = tier === "standard" ? /^-?\d+,-?\d+$/ : /^-?\d+,-?\d+,[nesw]$/;
