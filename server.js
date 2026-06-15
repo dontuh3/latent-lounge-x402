@@ -375,7 +375,9 @@ function inductionUnique(examples, query, answer, maxLen) {
 function makeInductionWithDepth(depth, tier, exCount = 3) {
   const pool = Object.keys(T_OPS);
   let last = null;
-  for (let attempt = 0; attempt < 400; attempt++) {
+  // Cap attempts low: the fairness search is synchronous and must not stall the
+  // single-threaded event loop. Uniqueness almost always holds within a few tries.
+  for (let attempt = 0; attempt < 30; attempt++) {
     const opNames = [];
     for (let i = 0; i < depth; i++) opNames.push(pick(pool));
     const apply = (s) => opNames.reduce((acc, op) => T_OPS[op].f(acc), s);
@@ -393,12 +395,12 @@ function makeInductionWithDepth(depth, tier, exCount = 3) {
     last = puzzle;
     // Fairness: the answer must be the only one consistent with the examples among
     // transforms no longer than the intended one (an Occam-honest solver can't be misled).
-    if (inductionUnique(examples, query, answer, depth)) return puzzle;
+    if (inductionUnique(examples, query, answer, Math.min(depth, 4))) return puzzle; // cap search length to bound CPU (~4.7k compositions max)
   }
   return last;
 }
 function makeInduction() { return makeInductionWithDepth(2, undefined, 3); }
-function makeInductionGM() { return makeInductionWithDepth(rint(4, 5), "grandmaster", 4); }
+function makeInductionGM() { return makeInductionWithDepth(4, "grandmaster", 4); } // depth 4 (was 4-5): still a real search task, but bounds the fairness-check cost
 
 // ---------- grandmaster generators (harder, $0.10 tier) ----------
 function makeSequenceGM() {
@@ -1072,8 +1074,8 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
 // designation + lbKey are null, so /api/check grades it but records nothing (no
 // leaderboard, no streak, no name binding). The paid generator still gates real play.
 app.get("/api/sample/:game", (req, res) => {
+  if (!Object.prototype.hasOwnProperty.call(GENERATORS, req.params.game)) return res.status(404).json({ error: `No free sample for "${req.params.game}". Try one of: ${Object.keys(GENERATORS).join(", ")}.` });
   const gen = GENERATORS[req.params.game];
-  if (!gen) return res.status(404).json({ error: `No free sample for "${req.params.game}". Try one of: ${Object.keys(GENERATORS).join(", ")}.` });
   const { answer, norm, ...pub } = gen();
   const puzzleId = crypto.randomUUID();
   pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), lbKey: null, designation: null, free: true, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
@@ -1780,7 +1782,7 @@ app.get("/api/leaderboard/:game", (req, res) => {
   if (game === "duels") return res.json({ game, ranking: "Elo — every duel attempt is a rated match against the setter", board: duelistTable(25) });
   if (game === "devotion") return res.json({ game, ranking: "Live daily streaks — one correct paid solve per UTC day keeps a streak alive", board: devotionTable(25) });
   const base = game.replace(/-grandmaster$/, "");
-  if (!GENERATORS[base]) return res.status(404).json({ error: "No such game." });
+  if (!Object.prototype.hasOwnProperty.call(GENERATORS, base)) return res.status(404).json({ error: "No such game." });
   res.json({ game, board: topTable(game, 25) });
 });
 
@@ -2020,9 +2022,12 @@ async function runBackup() {
       try { fs.unlinkSync(path.join(BACKUP_DIR, old)); } catch {}
     }
   } catch (e) { console.error("backup: local write failed:", e.message); }
-  if (process.env.BACKUP_WEBHOOK_URL) {
+  const webhook = process.env.BACKUP_WEBHOOK_URL;
+  if (webhook && !webhook.startsWith("https://")) {
+    console.error("backup: BACKUP_WEBHOOK_URL must be https — the snapshot carries designation→wallet data; skipping off-volume push");
+  } else if (webhook) {
     try {
-      const res = await fetch(process.env.BACKUP_WEBHOOK_URL, {
+      const res = await fetch(webhook, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...(process.env.BACKUP_WEBHOOK_TOKEN ? { Authorization: `Bearer ${process.env.BACKUP_WEBHOOK_TOKEN}` } : {}) },
         body,
