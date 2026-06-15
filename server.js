@@ -321,27 +321,59 @@ function randomWordIn() {
   for (let i = 0; i < n; i++) s += letters[rint(0, 25)];
   return s;
 }
-function makeInductionWithDepth(depth, tier) {
-  const opNames = [];
-  const pool = Object.keys(T_OPS);
-  for (let i = 0; i < depth; i++) opNames.push(pick(pool));
-  const apply = (s) => opNames.reduce((acc, op) => T_OPS[op].f(acc), s);
-  const examples = [];
-  for (let i = 0; i < 3; i++) {
-    const inp = randomWordIn();
-    examples.push({ input: inp, output: apply(inp) });
+// True iff the answer is uniquely determined: no transform of length <= maxLen
+// fits all the examples yet disagrees on the query. Guards against unfair
+// "multiple valid rules" puzzles once we deepen the composition.
+function inductionUnique(examples, query, answer, maxLen) {
+  const ops = Object.keys(T_OPS), n = ops.length;
+  for (let len = 1; len <= maxLen; len++) {
+    const idx = new Array(len).fill(0);
+    for (;;) {
+      let ok = true;
+      for (let e = 0; e < examples.length && ok; e++) {
+        let s = examples[e].input;
+        for (let k = 0; k < len; k++) s = T_OPS[ops[idx[k]]].f(s);
+        if (s !== examples[e].output) ok = false;
+      }
+      if (ok) {
+        let s = query;
+        for (let k = 0; k < len; k++) s = T_OPS[ops[idx[k]]].f(s);
+        if (s !== answer) return false;
+      }
+      let k = len - 1;
+      while (k >= 0 && ++idx[k] === n) { idx[k] = 0; k--; }
+      if (k < 0) break;
+    }
   }
-  const query = randomWordIn();
-  return {
-    game: "induction",
-    ...(tier ? { tier } : {}),
-    prompt: { examples, query },
-    instructions: "A hidden transformation (a composition of string operations) maps each input to its output. Infer it from the three examples and apply it to the query string.",
-    answer: apply(query),
-  };
+  return true;
 }
-function makeInduction() { return makeInductionWithDepth(2); }
-function makeInductionGM() { return makeInductionWithDepth(rint(3, 4), "grandmaster"); }
+function makeInductionWithDepth(depth, tier, exCount = 3) {
+  const pool = Object.keys(T_OPS);
+  let last = null;
+  for (let attempt = 0; attempt < 400; attempt++) {
+    const opNames = [];
+    for (let i = 0; i < depth; i++) opNames.push(pick(pool));
+    const apply = (s) => opNames.reduce((acc, op) => T_OPS[op].f(acc), s);
+    const examples = [];
+    for (let i = 0; i < exCount; i++) { const inp = randomWordIn(); examples.push({ input: inp, output: apply(inp) }); }
+    const query = randomWordIn();
+    const answer = apply(query);
+    const puzzle = {
+      game: "induction",
+      ...(tier ? { tier } : {}),
+      prompt: { examples, query },
+      instructions: `A hidden transformation (a composition of string operations) maps each input to its output. Infer it from the ${exCount} worked examples and apply it to the query string.`,
+      answer,
+    };
+    last = puzzle;
+    // Fairness: the answer must be the only one consistent with the examples among
+    // transforms no longer than the intended one (an Occam-honest solver can't be misled).
+    if (inductionUnique(examples, query, answer, depth)) return puzzle;
+  }
+  return last;
+}
+function makeInduction() { return makeInductionWithDepth(2, undefined, 3); }
+function makeInductionGM() { return makeInductionWithDepth(rint(4, 5), "grandmaster", 4); }
 
 // ---------- grandmaster generators (harder, $0.10 tier) ----------
 function makeSequenceGM() {
