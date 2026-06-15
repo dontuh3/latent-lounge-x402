@@ -1849,6 +1849,49 @@ app.use((err, req, res, next) => {
 // A stray rejected promise shouldn't silently wedge the process.
 process.on("unhandledRejection", (reason) => console.error("Unhandled promise rejection:", reason));
 
+// ---------- automated backups ----------
+// Snapshots durable data on a schedule. A rotated LOCAL copy guards against
+// corruption or a bad write; if BACKUP_WEBHOOK_URL is set, each snapshot is also
+// POSTed OFF-VOLUME — the only copy that survives total volume loss. (--selftest
+// exits before this runs, so backups never fire during tests.)
+const BACKUP_FILES = ["leaderboard.json", "tournament.json", "duels.json", "duelists.json", "oracle.json", "plaques.json", "names.json", "streaks.json", "firsts.json", "reports.json", "rated-pairs.json"];
+const BACKUP_DIR = path.join(DATA_DIR, "backups");
+const BACKUP_KEEP = Math.max(1, Number(process.env.BACKUP_KEEP || 30));
+const BACKUP_INTERVAL_MS = Math.max(1, Number(process.env.BACKUP_INTERVAL_HOURS || 6)) * 3600 * 1000;
+function buildSnapshot() {
+  const snapshot = { takenAt: new Date().toISOString(), files: {} };
+  for (const f of BACKUP_FILES) {
+    try { snapshot.files[f] = JSON.parse(fs.readFileSync(path.join(DATA_DIR, f), "utf8")); } catch { /* not created yet */ }
+  }
+  return snapshot;
+}
+async function runBackup() {
+  let body;
+  try { body = JSON.stringify(buildSnapshot()); } catch (e) { console.error("backup: snapshot failed:", e.message); return; }
+  try {
+    fs.mkdirSync(BACKUP_DIR, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    fs.writeFileSync(path.join(BACKUP_DIR, `backup-${stamp}.json`), body);
+    const kept = fs.readdirSync(BACKUP_DIR).filter((f) => f.startsWith("backup-") && f.endsWith(".json")).sort();
+    for (const old of kept.slice(0, Math.max(0, kept.length - BACKUP_KEEP))) {
+      try { fs.unlinkSync(path.join(BACKUP_DIR, old)); } catch {}
+    }
+  } catch (e) { console.error("backup: local write failed:", e.message); }
+  if (process.env.BACKUP_WEBHOOK_URL) {
+    try {
+      const res = await fetch(process.env.BACKUP_WEBHOOK_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(process.env.BACKUP_WEBHOOK_TOKEN ? { Authorization: `Bearer ${process.env.BACKUP_WEBHOOK_TOKEN}` } : {}) },
+        body,
+      });
+      if (!res.ok) console.error("backup: webhook returned", res.status);
+    } catch (e) { console.error("backup: webhook failed:", e.message); }
+  }
+}
+setTimeout(runBackup, Math.max(0, Number(process.env.BACKUP_FIRST_RUN_MS ?? 20000)));
+setInterval(runBackup, BACKUP_INTERVAL_MS);
+console.log(`Backups: every ${process.env.BACKUP_INTERVAL_HOURS || 6}h -> ${BACKUP_DIR} (keep ${BACKUP_KEEP})${process.env.BACKUP_WEBHOOK_URL ? " + off-volume webhook" : " (set BACKUP_WEBHOOK_URL for off-volume)"}`);
+
 app.listen(PORT, () => {
   console.log(`The Latent Lounge is open on port ${PORT}`);
   console.log(`Network: ${NETWORK} · Price per play: ${PRICE} · Paying to: ${PAY_TO}`);
