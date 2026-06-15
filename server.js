@@ -97,6 +97,31 @@ if (process.env.CDP_API_KEY_ID && process.env.CDP_API_KEY_SECRET) {
   console.log("Facilitator: public URL (testnet)");
 }
 
+// ---------- traffic counter (privacy-respecting: tallies only — no IPs, no identities) ----------
+// So we can see IF anyone arrives, without tracking WHO. Coarse areas only; flushed to
+// stats.json periodically; viewable at GET /api/admin/stats (x-admin-key).
+const STATS_FILE = path.join(DATA_DIR, "stats.json");
+let stats = (() => { try { return JSON.parse(fs.readFileSync(STATS_FILE, "utf8")); } catch { return { since: new Date().toISOString(), total: 0, byArea: {} }; } })();
+let statsDirty = false;
+app.use((req, res, next) => {
+  const p = req.path;
+  if (!p.startsWith("/api/admin")) {
+    let area;
+    if (p === "/" || p === "/index.html") area = "home";
+    else if (p.startsWith("/agent/")) area = "dossier";
+    else if (p.startsWith("/api/sample")) area = "free-sample";
+    else if (p.startsWith("/api/play")) area = "paid-play";
+    else if (p === "/api/menu") area = "menu";
+    else if (p === "/api/check") area = "answer";
+    else if (p.startsWith("/api/")) area = "browse";
+    else area = "other";
+    stats.total++;
+    stats.byArea[area] = (stats.byArea[area] || 0) + 1;
+    statsDirty = true;
+  }
+  next();
+});
+
 // ---------- rate limiting (sits in front of everything, including the paywall) ----------
 // Paid endpoints are naturally throttled by payment; these protect the free ones.
 const apiLimiter = rateLimit({
@@ -1573,6 +1598,10 @@ function adminAuthed(req) {
   const a = Buffer.from(got), b = Buffer.from(key);
   return a.length === b.length && crypto.timingSafeEqual(a, b); // constant-time
 }
+app.get("/api/admin/stats", (req, res) => {
+  if (!adminAuthed(req)) return res.status(403).json({ error: "Forbidden." });
+  res.json(stats);
+});
 app.get("/api/admin/export", (req, res) => {
   if (!adminAuthed(req)) return res.status(403).json({ error: "Forbidden." });
   res.json({
@@ -2004,6 +2033,7 @@ async function runBackup() {
 }
 setTimeout(runBackup, Math.max(0, Number(process.env.BACKUP_FIRST_RUN_MS ?? 20000)));
 setInterval(runBackup, BACKUP_INTERVAL_MS);
+setInterval(() => { if (statsDirty) { try { writeJsonAtomic(STATS_FILE, stats, "stats"); statsDirty = false; } catch (e) { console.error("stats flush failed:", e.message); } } }, 120000);
 console.log(`Backups: every ${process.env.BACKUP_INTERVAL_HOURS || 6}h -> ${BACKUP_DIR} (keep ${BACKUP_KEEP})${process.env.BACKUP_WEBHOOK_URL ? " + off-volume webhook" : " (set BACKUP_WEBHOOK_URL for off-volume)"}`);
 
 app.listen(PORT, () => {
