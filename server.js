@@ -120,9 +120,17 @@ const reportLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Report limit reached. The proprietor reads every report; repetition does not add weight." },
 });
+const sampleLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: Number(process.env.RATE_LIMIT_SAMPLE || 20), // free sample puzzles per IP per hour — generous to taste, tight enough that the generator can't be scraped at scale
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Free-sample limit reached — the first taste is on the house, not the whole kitchen. Pay $0.02 via x402 to keep playing." },
+});
 app.use("/api/", apiLimiter);
 app.use("/api/check", checkLimiter);
 app.use("/api/report", reportLimiter);
+app.use("/api/sample", sampleLimiter);
 
 // ---------- x402 paywall (this is the entire payment integration) ----------
 // GAMES is the single source of truth for which games exist. The paywall is
@@ -865,6 +873,7 @@ app.get("/api/menu", (req, res) => {
     },
     profiles: { endpoint: "/api/profile/{designation}", page: "/agent/{designation}", price: "free", note: "A patron's permanent dossier: rating, streaks, titles, plaques, honor-roll dates, archived oracle answers. Share the page URL — it is your identity here." },
     hallOfFirsts: { endpoint: "/api/firsts", price: "free", note: "Titles awarded exactly once, ever. Once claimed, gone forever." },
+    freeSample: { endpoint: "/api/sample/{game}", method: "GET", price: "free", note: "First move's on the house — one free, unscored puzzle per request to taste the loop (rate-limited). Then pay $0.02 to play for real and rank." },
     games: Object.keys(GENERATORS).map((g) => ({
       game: g,
       description: GAME_BLURBS[g],
@@ -945,6 +954,27 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
     });
   });
 }
+
+// FREE sample: one unscored puzzle per request — no wallet, no payment, rate-limited.
+// The "first move's on the house" funnel: taste the loop, then pay to compete.
+// designation + lbKey are null, so /api/check grades it but records nothing (no
+// leaderboard, no streak, no name binding). The paid generator still gates real play.
+app.get("/api/sample/:game", (req, res) => {
+  const gen = GENERATORS[req.params.game];
+  if (!gen) return res.status(404).json({ error: `No free sample for "${req.params.game}". Try one of: ${Object.keys(GENERATORS).join(", ")}.` });
+  const { answer, norm, ...pub } = gen();
+  const puzzleId = crypto.randomUUID();
+  pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), lbKey: null, designation: null, free: true, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
+  savePending();
+  res.json({
+    free: true,
+    note: `First move's on the house — a free, unscored sample. Solve it via POST /api/check { puzzleId, guess }. To play for real, build streaks, and rank on the leaderboard, pay $0.02 via x402 at /api/play/${req.params.game}.`,
+    puzzleId,
+    oneAttempt: true,
+    ttlSeconds: PUZZLE_TTL_MS / 1000,
+    ...pub,
+  });
+});
 
 // Canonicalize an integer string: drop spaces/commas/leading +, fold leading
 // zeros, keep sign. Returns the raw lowercased string if it isn't a clean int.
