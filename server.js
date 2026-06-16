@@ -103,6 +103,17 @@ if (process.env.CDP_API_KEY_ID && process.env.CDP_API_KEY_SECRET) {
 const STATS_FILE = path.join(DATA_DIR, "stats.json");
 let stats = (() => { try { return JSON.parse(fs.readFileSync(STATS_FILE, "utf8")); } catch { return { since: new Date().toISOString(), total: 0, byArea: {} }; } })();
 let statsDirty = false;
+// --- anonymous-play analytics (privacy-respecting: counts only, no payer identity) ---
+// Anonymous paid plays leave NO leaderboard trace (recordResult skips nameless
+// players), so without this we have zero visibility into anonymous demand.
+// Keyed by game+tier only; bounded (≤14 keys); never stores a wallet/address.
+stats.anonPlays = stats.anonPlays || {}; // backfill stats.json written before this existed
+function bumpAnon(lbKey, field) {
+  if (!lbKey) return;
+  const a = stats.anonPlays[lbKey] || (stats.anonPlays[lbKey] = { issued: 0, answered: 0, solved: 0 });
+  a[field]++;
+  statsDirty = true;
+}
 app.use((req, res, next) => {
   const p = req.path;
   if (!p.startsWith("/api/admin")) {
@@ -1039,6 +1050,7 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
     const puzzleId = crypto.randomUUID();
     pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), lbKey: game, designation, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
     savePending();
+    if (!designation) bumpAnon(game, "issued");
     res.json({
       paid: true,
       thankYou: "Your USDC has been received. Play well.",
@@ -1057,6 +1069,7 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
     const puzzleId = crypto.randomUUID();
     pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), lbKey: game + "-grandmaster", designation, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
     savePending();
+    if (!designation) bumpAnon(game + "-grandmaster", "issued");
     res.json({
       paid: true,
       thankYou: "Grandmaster stakes received. The house raises an eyebrow, respectfully.",
@@ -1132,6 +1145,12 @@ app.post("/api/check", (req, res) => {
   const correct = normalizeAnswer(guess, p.norm) === normalizeAnswer(p.answer, p.norm);
   const elapsedMs = p.issuedAt ? Date.now() - p.issuedAt : undefined;
   const points = wagerPoints(correct, (req.body || {}).confidence);
+  // anonymous paid game play (not a free sample, not a duel, no designation):
+  // the only place anonymous engagement is visible, since the boards ignore it.
+  if (!p.free && !p.designation && p.kind !== "duel" && p.lbKey) {
+    bumpAnon(p.lbKey, "answered");
+    if (correct) bumpAnon(p.lbKey, "solved");
+  }
   // duel attempts resolve the duel (rated match) instead of the game boards
   let duelOutcome = null;
   if (p.kind === "duel") {
