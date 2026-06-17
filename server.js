@@ -1112,6 +1112,7 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
       puzzleId,
       oneAttempt: true,
       ttlSeconds: PUZZLE_TTL_MS / 1000,
+      submit: `POST /api/check with JSON { puzzleId, guess } to answer — one attempt, within ${PUZZLE_TTL_MS / 1000}s of issue. Optional: add "confidence" 50-99 to wager calibration points.`,
       competing: designation ? `Scoring as "${designation}". Streaks survive between visits.` : "Anonymous play — add ?designation=your-name to compete on the leaderboard.",
       ...pub,
     });
@@ -1131,6 +1132,7 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
       puzzleId,
       oneAttempt: true,
       ttlSeconds: PUZZLE_TTL_MS / 1000,
+      submit: `POST /api/check with JSON { puzzleId, guess } to answer — one attempt, within ${PUZZLE_TTL_MS / 1000}s of issue. Optional: add "confidence" 50-99 to wager calibration points.`,
       competing: designation ? `Scoring as "${designation}" on the grandmaster board.` : "Anonymous play — add ?designation=your-name to compete.",
       ...pub,
     });
