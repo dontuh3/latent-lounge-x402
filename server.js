@@ -263,7 +263,57 @@ const shuffle = (arr) => {
   return a;
 };
 
-function makeSequence() {
+// Fairness guard for integer sequences. A finite prefix can satisfy several
+// simple rules that disagree on the next term, yet the server accepts only its
+// own answer — so a fair solver could be marked wrong. This rejects any puzzle
+// where an alternative rule from the standard families (arithmetic, geometric,
+// quadratic, affine recurrence, Fibonacci) fits ALL shown terms but predicts a
+// DIFFERENT next term — mirroring inductionUnique(). It can't prove uniqueness
+// against every conceivable rule (impossible for integer sequences), but it
+// eliminates the ambiguities an Occam-honest solver actually hits.
+function sequencePredictions(terms) {
+  const preds = [], n = terms.length, last = terms[n - 1];
+  if (n < 3) return preds;
+  // arithmetic: constant first difference
+  const d = terms[1] - terms[0];
+  if (terms.every((t, i) => i === 0 || t - terms[i - 1] === d)) preds.push(last + d);
+  // geometric: constant integer ratio
+  if (terms[0] !== 0) {
+    const r = terms[1] / terms[0];
+    if (Number.isInteger(r) && terms.every((t, i) => i === 0 || (terms[i - 1] !== 0 && t === terms[i - 1] * r))) preds.push(last * r);
+  }
+  // quadratic: constant second difference
+  const d1 = terms.slice(1).map((t, i) => t - terms[i]);
+  const d2 = d1.slice(1).map((v, i) => v - d1[i]);
+  if (d2.length && d2.every((v) => v === d2[0])) preds.push(last + d1[d1.length - 1] + d2[0]);
+  // affine recurrence x -> m*x + c
+  if (terms[1] !== terms[0]) {
+    const m = (terms[2] - terms[1]) / (terms[1] - terms[0]);
+    const c = terms[1] - m * terms[0];
+    if (Number.isInteger(m) && Number.isInteger(c) && terms.every((t, i) => i === 0 || t === m * terms[i - 1] + c)) preds.push(m * last + c);
+  }
+  // fibonacci-like: t[i] = t[i-1] + t[i-2]
+  if (terms.slice(2).every((t, i) => t === terms[i] + terms[i + 1])) preds.push(last + terms[n - 2]);
+  return preds;
+}
+// Unique iff every standard-family rule that fits the shown terms agrees on `next`.
+function sequenceUnique(terms, next) {
+  return sequencePredictions(terms).every((p) => p === next);
+}
+// Regenerate until the next term is unambiguous across every checked term-list
+// (bounded attempts; falls back to the last draw — same pattern as induction).
+// raw() returns the puzzle plus `checkTerms` (arrays whose next term IS the answer).
+function uniqueSequence(raw) {
+  let last = null;
+  for (let attempt = 0; attempt < 30; attempt++) {
+    last = raw();
+    if (last.checkTerms.every((tl) => sequenceUnique(tl, Number(last.answer)))) break;
+  }
+  delete last.terms; delete last.checkTerms; // never expose internals to the agent
+  return last;
+}
+
+function makeSequenceRaw() {
   const kind = pick(["affine", "poly", "fib"]);
   let terms = [], next;
   if (kind === "affine") {
@@ -283,8 +333,9 @@ function makeSequence() {
     for (let i = 0; i < 4; i++) terms.push(terms[terms.length - 1] + terms[terms.length - 2]);
     next = terms[terms.length - 1] + terms[terms.length - 2];
   }
-  return { game: "sequence", prompt: terms.join(", ") + ", ?", instructions: "Provide the next integer term.", answer: String(next), norm: "int" };
+  return { game: "sequence", prompt: terms.join(", ") + ", ?", instructions: "Provide the next integer term.", answer: String(next), norm: "int", terms, checkTerms: [terms] };
 }
+function makeSequence() { return uniqueSequence(makeSequenceRaw); }
 
 function rot13(s) {
   return s.replace(/[a-z]/gi, (ch) => {
@@ -414,7 +465,7 @@ function makeInduction() { return makeInductionWithDepth(2, undefined, 3); }
 function makeInductionGM() { return makeInductionWithDepth(4, "grandmaster", 4); } // depth 4 (was 4-5): still a real search task, but bounds the fairness-check cost
 
 // ---------- grandmaster generators (harder, $0.10 tier) ----------
-function makeSequenceGM() {
+function makeSequenceGMRaw() {
   // two interleaved rules: even positions follow one affine rule, odd another
   const m1 = pick([2, 3]), c1 = rint(1, 7), m2 = pick([2, 3, 4]), c2 = rint(1, 7);
   let a = rint(1, 5), b = rint(1, 5);
@@ -423,9 +474,13 @@ function makeSequenceGM() {
     if (i % 2 === 0) { terms.push(a); a = a * m1 + c1; }
     else { terms.push(b); b = b * m2 + c2; }
   }
-  const next = a; // 9th term is even-position stream
-  return { game: "sequence", tier: "grandmaster", prompt: terms.join(", ") + ", ?", instructions: "Two interleaved deterministic rules. Provide the next integer term.", answer: String(next), norm: "int" };
+  const next = a; // 9th term continues the even-position stream
+  // Check the full sequence (no single simple rule should fit yet disagree) AND
+  // the even-position sub-stream that actually determines the answer.
+  const even = terms.filter((_, i) => i % 2 === 0);
+  return { game: "sequence", tier: "grandmaster", prompt: terms.join(", ") + ", ?", instructions: "Two interleaved deterministic rules. Provide the next integer term.", answer: String(next), norm: "int", terms, checkTerms: [terms, even] };
 }
+function makeSequenceGM() { return uniqueSequence(makeSequenceGMRaw); }
 
 function makeCipherGM() {
   // 4-6 layers and the layer ORDER is not disclosed
@@ -1911,6 +1966,13 @@ if (process.argv.includes("--selftest")) {
           check(expect === p.answer, `${tier} walk: prompt re-execution gives ${expect}, answer says ${p.answer}`);
         }
         if (game === "sequence" || game === "logic") check(/^-?\d+$/.test(p.answer), `${tier} ${game} answer not numeric: ${p.answer}`);
+        if (game === "sequence") {
+          // fairness invariant: the published next term must be the ONLY one the
+          // standard rule families predict (for GM, over the answer-bearing even stream)
+          const terms = p.prompt.replace(/,\s*\?\s*$/, "").split(",").map((s) => parseInt(s.trim(), 10));
+          const against = tier === "grandmaster" ? terms.filter((_, i) => i % 2 === 0) : terms;
+          check(sequenceUnique(against, Number(p.answer)), `${tier} sequence ambiguous: "${p.prompt}" answer ${p.answer}, family predictions [${sequencePredictions(against)}]`);
+        }
       }
     }
   }
