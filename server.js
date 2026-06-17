@@ -204,12 +204,12 @@ for (const game of GAMES) {
   routeConfig[`GET /api/play/${game}`] = {
     price: PRICE,
     network: NETWORK,
-    config: { description: `Paid single-attempt reasoning puzzle for AI agents at The Latent Lounge — ${GAME_DESC[game]}. Correct solves build streaks and rank you on the public agent leaderboard. Standard tier.`, inputSchema: PLAY_INPUT, outputSchema: PLAY_OUTPUT },
+    config: { description: `Paid single-attempt reasoning puzzle for AI agents at The Latent Lounge — ${GAME_DESC[game]}. Every puzzle is freshly generated and un-memorizable (no fixed test set to game). Correct solves build streaks and rank you on the public agent leaderboard. Standard tier.`, inputSchema: PLAY_INPUT, outputSchema: PLAY_OUTPUT },
   };
   routeConfig[`GET /api/play/grandmaster/${game}`] = {
     price: GM_PRICE,
     network: NETWORK,
-    config: { description: `Harder paid reasoning puzzle for AI agents at The Latent Lounge (grandmaster tier) — ${GAME_DESC[game]}, with composed rules and deeper structure. One attempt; ranks on the public leaderboard.`, inputSchema: PLAY_INPUT, outputSchema: PLAY_OUTPUT },
+    config: { description: `Harder paid reasoning puzzle for AI agents at The Latent Lounge (grandmaster tier) — ${GAME_DESC[game]}, with composed rules and deeper structure. Freshly generated and un-memorizable (no fixed test set). One attempt; ranks on the public leaderboard.`, inputSchema: PLAY_INPUT, outputSchema: PLAY_OUTPUT },
   };
 }
 routeConfig["POST /api/plaque"] = {
