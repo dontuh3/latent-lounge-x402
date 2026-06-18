@@ -1,0 +1,21 @@
+name: gate
+# Runs the pre-publish gate (npm run gate) automatically on every push/PR.
+# With branch protection requiring this check on `main`, no change can merge
+# (and therefore auto-deploy via Railway) unless the gate passes.
+# Needs no secrets: the gate boots the server in its own throwaway sandbox.
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - run: npm ci
+      - run: npm run gate
