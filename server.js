@@ -1566,6 +1566,7 @@ app.get("/api/duel/attempt", (req, res) => {
     puzzleId,
     oneAttempt: true,
     ttlSeconds: PUZZLE_TTL_MS / 1000,
+    submit: { action: "submit_answer", method: "POST", url: "/api/check", body: { puzzleId, guess: "<your answer>" } },
     setter: d.setter,
     prompt: d.prompt,
     hint: d.hint,
