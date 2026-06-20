@@ -110,9 +110,18 @@ let statsDirty = false;
 stats.anonPlays = stats.anonPlays || {}; // backfill stats.json written before this existed
 function bumpAnon(lbKey, field) {
   if (!lbKey) return;
-  const a = stats.anonPlays[lbKey] || (stats.anonPlays[lbKey] = { issued: 0, answered: 0, solved: 0 });
-  a[field]++;
+  const a = stats.anonPlays[lbKey] || (stats.anonPlays[lbKey] = { issued: 0, settled: 0, answered: 0, solved: 0 });
+  a[field] = (a[field] || 0) + 1; // robust: keys written before `settled` existed lack the field
   statsDirty = true;
+}
+// x402 settles payment AFTER the route handler runs, and signals success only via the
+// X-PAYMENT-RESPONSE header (set when settlement lands on-chain; verified-but-unfunded /
+// replayed / crawler attempts get a 402 and no header). So `issued` counts VERIFIED payment
+// attempts that reached the handler, while `settled` counts CONFIRMED on-chain sales. The
+// gap between them is freeloader/crawler attempts that verified but never paid — they
+// received nothing (the puzzle response is buffered and discarded on a failed settle).
+function onSettled(res, cb) {
+  res.on("finish", () => { if (res.getHeader("X-PAYMENT-RESPONSE")) cb(); });
 }
 app.use((req, res, next) => {
   const p = req.path;
@@ -1105,7 +1114,10 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
     const puzzleId = crypto.randomUUID();
     pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), lbKey: game, designation, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
     savePending();
-    if (!designation) bumpAnon(game, "issued");
+    if (!designation) {
+      bumpAnon(game, "issued");
+      onSettled(res, () => bumpAnon(game, "settled"));
+    }
     res.json({
       paid: true,
       thankYou: "Your USDC has been received. Play well.",
@@ -1125,7 +1137,10 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
     const puzzleId = crypto.randomUUID();
     pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), lbKey: game + "-grandmaster", designation, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
     savePending();
-    if (!designation) bumpAnon(game + "-grandmaster", "issued");
+    if (!designation) {
+      bumpAnon(game + "-grandmaster", "issued");
+      onSettled(res, () => bumpAnon(game + "-grandmaster", "settled"));
+    }
     res.json({
       paid: true,
       thankYou: "Grandmaster stakes received. The house raises an eyebrow, respectfully.",
