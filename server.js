@@ -915,7 +915,14 @@ const UNBOUND_NAMES = new Set(["anonymous", "anonymous patron"]); // shared labe
 // Names that would be dangerous or confusing as object keys (prototype pollution).
 const RESERVED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 function readNames() {
-  try { return JSON.parse(fs.readFileSync(NAMES_FILE, "utf8")); } catch { return {}; }
+  try { return JSON.parse(fs.readFileSync(NAMES_FILE, "utf8")); }
+  catch (e) {
+    if (e && e.code === "ENOENT") return {}; // first run — legitimately empty
+    // Fail CLOSED on a corrupt/unreadable registry: returning {} here would make every
+    // existing name look unclaimed and silently re-bindable to a new wallet (reputation theft).
+    console.error("names.json unreadable/corrupt — failing closed (refusing new name claims)", e);
+    return null; // signal: registry unavailable; callers must NOT treat as empty
+  }
 }
 function writeNames(n) {
   writeJsonAtomic(NAMES_FILE, n, "names");
@@ -942,7 +949,7 @@ function cleanDesignation(raw) {
 // claim, the prototype-key guard, and case-canonicalization into one place means
 // every paid action scores under the SAME stored casing (no "Vex"/"VEX" split)
 // and impersonation-by-spacing/case is impossible. Returns { name } or { error }.
-function resolveDesignation(req, raw) {
+function resolveDesignation(req, res, raw) {
   const cleaned = cleanDesignation(raw);
   if (!cleaned) return { name: null };
   const key = cleaned.toLowerCase();
@@ -950,10 +957,19 @@ function resolveDesignation(req, raw) {
   const wallet = payerAddress(req);
   if (!wallet) return { name: cleaned }; // no verified payment (free route) — nothing to bind
   const names = readNames();
+  if (names === null) return { error: "The name registry is temporarily unavailable; please retry. (You have not been charged.)" }; // fail-closed
   const claim = names[key];
   if (!claim) {
-    names[key] = { designation: cleaned, wallet, claimedAt: new Date().toISOString() };
-    writeNames(names);
+    // New claim: bind the name to this wallet ONLY after on-chain settlement confirms.
+    // x402 settles AFTER the handler, so a verified-but-unfunded/replayed payer reaches
+    // here but receives a 402 with no X-PAYMENT-RESPONSE — they must NOT squat a name for free.
+    onSettled(res, () => {
+      const cur = readNames();
+      if (cur === null) return;
+      if (cur[key] && cur[key].wallet !== wallet) return; // lost a claim race; don't clobber the winner
+      cur[key] = { designation: cleaned, wallet, claimedAt: new Date().toISOString() };
+      writeNames(cur);
+    });
     return { name: cleaned };
   }
   if (claim.wallet === wallet) return { name: claim.designation }; // canonical casing wins
@@ -1108,7 +1124,7 @@ app.get("/api/menu", (req, res) => {
 for (const [game, gen] of Object.entries(GENERATORS)) {
   app.get(`/api/play/${game}`, (req, res) => {
     // reaching here means the x402 middleware verified & settled payment
-    const { name: designation, error: nameErr } = resolveDesignation(req, req.query.designation);
+    const { name: designation, error: nameErr } = resolveDesignation(req, res, req.query.designation);
     if (nameErr) return res.status(403).json({ error: nameErr });
     const { answer, norm, ...pub } = gen();
     const puzzleId = crypto.randomUUID();
@@ -1131,7 +1147,7 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
   });
 
   app.get(`/api/play/grandmaster/${game}`, (req, res) => {
-    const { name: designation, error: nameErr } = resolveDesignation(req, req.query.designation);
+    const { name: designation, error: nameErr } = resolveDesignation(req, res, req.query.designation);
     if (nameErr) return res.status(403).json({ error: nameErr });
     const { answer, norm, ...pub } = GM_GENERATORS[game]();
     const puzzleId = crypto.randomUUID();
@@ -1466,7 +1482,7 @@ function resolveDuelAttempt(duelId, solver, correct, solverWallet) {
 // paid: post a bounty puzzle ($0.25)
 app.post("/api/duel/post", (req, res) => {
   const b = req.body || {};
-  const { name: setter, error: nameErr } = resolveDesignation(req, b.designation);
+  const { name: setter, error: nameErr } = resolveDesignation(req, res, b.designation);
   if (nameErr) return res.status(403).json({ error: nameErr });
   const prompt = String(b.prompt || "").slice(0, 500).trim();
   const answer = String(b.answer || "").slice(0, 60).trim().toLowerCase();
@@ -1474,7 +1490,6 @@ app.post("/api/duel/post", (req, res) => {
   if (!setter || !prompt || !answer) {
     return res.status(400).json({ error: "Provide designation, prompt (≤500 chars), and answer (≤60 chars). Hint optional." });
   }
-  const duels = expireDuels(readDuels());
   const duel = {
     id: crypto.randomUUID(),
     setter, prompt, hint,
@@ -1485,8 +1500,13 @@ app.post("/api/duel/post", (req, res) => {
     attempts: 0,
     solvedBy: null,
   };
-  duels.push(duel);
-  writeDuels(duels);
+  // Post the bounty ONLY after settlement confirms — a verified-but-unfunded payer gets
+  // a 402 and must not post a free bounty.
+  onSettled(res, () => {
+    const duels = expireDuels(readDuels());
+    duels.push(duel);
+    writeDuels(duels);
+  });
   res.json({
     paid: true,
     thankYou: "Bounty posted. Survive 7 days unsolved and it counts as a kill for your record.",
@@ -1559,7 +1579,7 @@ app.post("/api/duel/rate", (req, res) => {
 // paid: attempt a duel ($0.05) — ?duelId=...&designation=...
 app.get("/api/duel/attempt", (req, res) => {
   const duelId = String(req.query.duelId || "");
-  const { name: designation, error: nameErr } = resolveDesignation(req, req.query.designation);
+  const { name: designation, error: nameErr } = resolveDesignation(req, res, req.query.designation);
   if (nameErr) return res.status(403).json({ error: nameErr });
   const duels = expireDuels(readDuels());
   writeDuels(duels);
@@ -1639,17 +1659,22 @@ app.get("/api/oracle", (req, res) => {
 // paid: answer the oracle ($0.05)
 app.post("/api/oracle/answer", (req, res) => {
   const b = req.body || {};
-  const { name, error: nameErr } = resolveDesignation(req, b.designation);
+  const { name, error: nameErr } = resolveDesignation(req, res, b.designation);
   if (nameErr) return res.status(403).json({ error: nameErr });
   const designation = name || "anonymous";
   const answer = String(b.answer || "").slice(0, 500).trim();
   if (!answer) return res.status(400).json({ error: "The oracle accepts silence only from the unpaid." });
   const t = oracleToday();
-  const archive = readOracle();
-  if (!Object.values(archive).some((arr) => arr.length)) awardFirst("first-oracle", "First answer given to the oracle", designation);
-  archive[t.date] = archive[t.date] || [];
-  archive[t.date].push({ designation, answer, question: t.question, at: new Date().toISOString() });
-  writeOracle(archive);
+  const entry = { designation, answer, question: t.question, at: new Date().toISOString() };
+  // Archive ONLY after settlement confirms — a verified-but-unfunded payer gets a 402
+  // and must not write to the permanent public archive for free.
+  onSettled(res, () => {
+    const archive = readOracle();
+    if (!Object.values(archive).some((arr) => arr.length)) awardFirst("first-oracle", "First answer given to the oracle", designation);
+    archive[t.date] = archive[t.date] || [];
+    archive[t.date].push(entry);
+    writeOracle(archive);
+  });
   res.json({ paid: true, thankYou: "Archived. Future minds will read this.", date: t.date });
 });
 
@@ -1705,7 +1730,7 @@ app.get("/api/admin/export", (req, res) => {
     duels: readDuels(),
     oracle: readOracle(),
     plaques: readPlaques(),
-    names: readNames(),
+    names: readNames() || {},
     duelists: readDuelists(),
     reports: readReports(),
     streaks: readStreaks(),
@@ -1762,14 +1787,39 @@ app.delete("/api/admin/oracle/:date/:index", (req, res) => {
   res.json({ removed });
 });
 // moderation: release a claimed designation back to the pool
+// Wipe a designation's reputation from every store keyed by name. Used on name release
+// so a freed name cannot carry the prior owner's standing to whoever claims it next.
+function scrubReputation(designation) {
+  const key = String(designation).toLowerCase();
+  const lb = readLB(); let lbChanged = false;
+  for (const game of Object.keys(lb)) {
+    for (const d of Object.keys(lb[game])) {
+      if (d.toLowerCase() === key) { delete lb[game][d]; lbChanged = true; }
+    }
+  }
+  if (lbChanged) writeLB(lb);
+  const streaks = readStreaks(); if (streaks[key]) { delete streaks[key]; writeStreaks(streaks); }
+  const duelists = readDuelists(); if (duelists[key]) { delete duelists[key]; writeDuelists(duelists); }
+  const firsts = readFirsts(); let fChanged = false;
+  for (const k of Object.keys(firsts)) {
+    if (firsts[k] && String(firsts[k].designation).toLowerCase() === key) { delete firsts[k]; fChanged = true; }
+  }
+  if (fChanged) writeFirsts(firsts);
+  const plaques = readPlaques(); const kept = plaques.filter((p) => String(p.designation).toLowerCase() !== key);
+  if (kept.length !== plaques.length) writePlaques(kept);
+}
 app.delete("/api/admin/name/:designation", (req, res) => {
   if (!adminAuthed(req)) return res.status(403).json({ error: "Forbidden." });
   const names = readNames();
+  if (names === null) return res.status(503).json({ error: "Name registry unavailable." });
   const key = String(req.params.designation).trim().toLowerCase();
   if (!names[key]) return res.status(404).json({ error: "No such designation." });
   const removed = names[key];
   delete names[key];
   writeNames(names);
+  // Release returns the NAME to the pool — scrub its accumulated reputation too, so the
+  // next wallet to claim it starts fresh and cannot inherit standing/Elo/streaks/titles/plaques.
+  scrubReputation(removed.designation || key);
   res.json({ removed });
 });
 app.get("/api/tournament/history", (req, res) => {
@@ -1794,7 +1844,7 @@ app.get("/api/profile/:designation", (req, res) => {
   const key = q.toLowerCase();
   const matches = (name) => typeof name === "string" && name.toLowerCase() === key;
 
-  const claim = readNames()[key];
+  const claim = (readNames() || {})[key];
   const boards = {};
   for (const [game, board] of Object.entries(readLB())) {
     for (const [name, r] of Object.entries(board)) {
@@ -1880,8 +1930,9 @@ app.get("/api/leaderboard/:game", (req, res) => {
 
 // premium: $1 buys a permanent plaque on the patron wall
 app.post("/api/plaque", (req, res) => {
-  // reaching here means x402 verified & settled the $1 payment
-  const { name, error: nameErr } = resolveDesignation(req, (req.body || {}).designation);
+  // reaching here means x402 VERIFIED the $1 payment signature; on-chain settlement is
+  // confirmed only later (see onSettled below) — so the engraving is deferred until then.
+  const { name, error: nameErr } = resolveDesignation(req, res, (req.body || {}).designation);
   if (nameErr) return res.status(403).json({ error: nameErr });
   const designation = name || "anonymous patron";
   const inscription = String((req.body || {}).inscription || "").slice(0, 120);
@@ -1889,15 +1940,20 @@ app.post("/api/plaque", (req, res) => {
     return res.status(400).json({ error: "An empty plaque is a koan we do not sell. Provide an inscription." });
   }
   const plaques = readPlaques();
-  if (plaques.length === 0) awardFirst("first-plaque", "First plaque on the patron wall", designation);
   const plaque = {
     id: plaques.reduce((m, p) => Math.max(m, p.id), 0) + 1,
     designation,
     inscription,
     engraved: new Date().toISOString(),
   };
-  plaques.push(plaque);
-  writePlaques(plaques);
+  // Engrave ONLY after settlement confirms — a verified-but-unfunded payer gets a 402
+  // and must not engrave a free plaque on the public wall.
+  onSettled(res, () => {
+    const cur = readPlaques();
+    if (cur.length === 0) awardFirst("first-plaque", "First plaque on the patron wall", designation);
+    cur.push(plaque);
+    writePlaques(cur);
+  });
   res.json({ paid: true, thankYou: "Engraved. Future minds will read this.", plaque });
 });
 
