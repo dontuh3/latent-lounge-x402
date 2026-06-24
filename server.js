@@ -26,6 +26,7 @@ dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
+app.disable("x-powered-by"); // don't advertise the framework (fingerprinting)
 app.set("trust proxy", 1); // required for correct client IPs behind Railway/Render/Fly proxies
 app.use(express.json({ limit: "16kb" })); // puzzle answers and inscriptions are tiny; cap body size
 
@@ -1364,7 +1365,7 @@ function markPairRated(winWallet, loseWallet, today = utcDay()) {
   writeJsonAtomic(RATED_PAIRS_FILE, pairs, "rated-pairs");
 }
 // Returns rating movements; winner gain always equals loser loss (zero-sum).
-// kFactor 0 records the win/loss but moves no rating (used for repeat matchups).
+// kFactor 0 (capped repeat matchup) moves neither rating nor win/loss record — anti-collusion.
 function eloMatch(winnerDesignation, loserDesignation, kFactor = ELO_K) {
   const duelists = readDuelists();
   const w = duelistRecord(duelists, winnerDesignation);
@@ -1374,8 +1375,10 @@ function eloMatch(winnerDesignation, loserDesignation, kFactor = ELO_K) {
   delta = Math.max(0, Math.min(delta, l.rating - ELO_FLOOR)); // never below the floor, never negative
   w.rating += delta;
   l.rating -= delta;
-  w.wins++;
-  l.losses++;
+  // Only a rating-eligible match (kFactor>0) pads the W/L record. A capped repeat matchup
+  // (kFactor 0) moves neither rating NOR record, so a colluding wallet pair can't trade a
+  // known-answer bounty back and forth to inflate wins (the leaderboard's tiebreaker).
+  if (kFactor > 0) { w.wins++; l.losses++; }
   writeDuelists(duelists);
   if (w.rating >= 1100) awardFirst("first-duelist-1100", "First duelist rated 1100", w.designation);
   return {
@@ -1474,7 +1477,7 @@ function resolveDuelAttempt(duelId, solver, correct, solverWallet) {
     const loseWallet = correct ? d.setterWallet : solverWallet;
     const repeat = pairRatedToday(winWallet, loseWallet);
     ranked = eloMatch(correct ? solver : d.setter, correct ? d.setter : solver, repeat ? 0 : ELO_K);
-    if (repeat) ranked.note = "Repeat matchup with this wallet today — the record counts, the rating holds.";
+    if (repeat) ranked.note = "Repeat matchup with this wallet today — neither rating nor record moves (anti-collusion). The duel still resolves.";
     else markPairRated(winWallet, loseWallet);
   }
   writeDuels(duels);
