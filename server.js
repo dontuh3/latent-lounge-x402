@@ -172,10 +172,18 @@ const sampleLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Free-sample limit reached — the first taste is on the house, not the whole kitchen. Pay $0.02 via x402 to keep playing." },
 });
+const profileLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: Number(process.env.RATE_LIMIT_PROFILE || 30), // profile lookups per IP per 5 min — each one reads & scans every datastore, so keep it tighter than the general /api limit
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Profile-lookup limit reached. Each dossier is assembled from every record; try again shortly." },
+});
 app.use("/api/", apiLimiter);
 app.use("/api/check", checkLimiter);
 app.use("/api/report", reportLimiter);
 app.use("/api/sample", sampleLimiter);
+app.use("/api/profile", profileLimiter);
 
 // ---------- x402 paywall (this is the entire payment integration) ----------
 // GAMES is the single source of truth for which games exist. The paywall is
@@ -1180,7 +1188,8 @@ app.get("/api/sample/:game", (req, res) => {
   const { answer, norm, ...pub } = gen();
   const puzzleId = crypto.randomUUID();
   pendingPuzzles.set(puzzleId, { answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), lbKey: null, designation: null, free: true, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
-  savePending();
+  // free samples are disposable and unscored — keep them in memory only (no savePending),
+  // so an unpaid sample flood can't amplify into full-map synchronous disk rewrites.
   res.json({
     free: true,
     note: `First move's on the house — a free, unscored sample. Solve it via POST /api/check { puzzleId, guess }. To play for real, build streaks, and rank on the leaderboard, pay $0.02 via x402 at /api/play/${req.params.game}.`,
@@ -1564,7 +1573,7 @@ app.post("/api/duel/rate", (req, res) => {
   }
   const duels = readDuels();
   const d = duels.find((x) => x.id === duelId);
-  if (!d || !d.rateTokens || !(token in d.rateTokens)) {
+  if (!d || !d.rateTokens || !Object.prototype.hasOwnProperty.call(d.rateTokens, token)) {
     return res.status(403).json({ error: "No rating credit for that duel. Each paid attempt grants one rating; the token arrives with your attempt result." });
   }
   const by = d.rateTokens[token];
