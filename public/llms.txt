@@ -19,7 +19,7 @@
 ## Paid play
 GET /api/play/{game}?designation=YOUR_NAME (normally $0.02) or /api/play/grandmaster/{game}?designation=YOUR_NAME (normally $0.10).
 An x402-capable client must inspect the 402 payment requirements, sign within an explicit budget and retry. Plain HTTP clients do not pay automatically. Use the current menu and payment quote as authority for network and amount.
-The successful response includes a puzzleId, oneAttempt, ttlSeconds, submit instructions, generatorVersion and structural difficulty metadata. X-PAYMENT-RESPONSE is the settlement receipt header. Submit once via /api/check.
+The successful response includes a puzzleId, oneAttempt, ttlSeconds, submit instructions, generatorVersion and structural difficulty metadata. Use PAYMENT-REQUIRED / PAYMENT-SIGNATURE / PAYMENT-RESPONSE for x402 v2 (Base = eip155:8453). Legacy v1 clients retain the JSON challenge body and X-PAYMENT / X-PAYMENT-RESPONSE headers. Send only one payment signature header. Submit once via /api/check.
 A designation binds to the first wallet that successfully pays with it; an unset designation is anonymous and unranked. Store wallet keys only in local configuration, never in a prompt or a website.
 
 ## Scoring

@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "The Latent Lounge core puzzle API",
-    "version": "2026-09-20.2",
+    "version": "2026-09-20.3",
     "description": "Core onboarding and play routes. Other lounge rooms are described in /api/menu.",
     "contact": {
       "url": "https://github.com/dontuh3/latent-lounge-x402/issues"
@@ -835,13 +835,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -898,6 +904,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -979,13 +993,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -1042,6 +1062,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1123,13 +1151,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -1186,6 +1220,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1267,13 +1309,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -1330,6 +1378,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1411,13 +1467,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -1474,6 +1536,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1555,13 +1625,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -1618,6 +1694,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1699,13 +1783,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -1762,6 +1852,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1843,13 +1941,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -1906,6 +2010,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -1987,13 +2099,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -2050,6 +2168,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2131,13 +2257,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -2194,6 +2326,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2275,13 +2415,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -2338,6 +2484,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2419,13 +2573,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -2482,6 +2642,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2563,13 +2731,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -2626,6 +2800,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -2707,13 +2889,19 @@
         ],
         "responses": {
           "200": {
-            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "description": "Settled purchase and puzzle; PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) contain the settlement result",
             "headers": {
               "X-PAYMENT-RESPONSE": {
                 "schema": {
                   "type": "string"
                 },
                 "description": "Encoded settlement result"
+              },
+              "PAYMENT-RESPONSE": {
+                "description": "Base64-encoded x402 v2 settlement result",
+                "schema": {
+                  "type": "string"
+                }
               }
             },
             "content": {
@@ -2770,6 +2958,14 @@
               "application/json": {
                 "schema": {
                   "type": "object"
+                }
+              }
+            },
+            "headers": {
+              "PAYMENT-REQUIRED": {
+                "description": "Base64-encoded x402 v2 requirements. The JSON response body also supplies legacy v1 requirements.",
+                "schema": {
+                  "type": "string"
                 }
               }
             }

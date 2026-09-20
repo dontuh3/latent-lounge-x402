@@ -29,3 +29,11 @@ If the payment settled, POST /api/admin/payment-recovery with {id, transactionHa
 If no payment occurred, wait until authorization expiry is finalized, then POST {id, action:"release-expired"}. The server confirms the nonce is still unused at finality before clearing the record. There is no unauthenticated or unverified “mark paid” button. Configure RECOVERY_RPC_URL only to a trusted RPC for the configured Base network.
 
 The journal and receipt stores contain private operational data and belong only on the mounted volume/backups. They are gitignored and not public routes. Backups now include these records. Do not roll back to older code while a prepared journal exists; resolve it first.
+
+## x402 v2 compatibility (2026-09-20)
+
+The HTTP adapter advertises a canonical v2 PAYMENT-REQUIRED header and preserves the v1 JSON challenge body. It accepts either PAYMENT-SIGNATURE (v2) or X-PAYMENT (v1), rejecting ambiguous or mismatched headers. V2 accepted terms must match the server quote. Both transports use the same facilitator verification, durable journal, and replay identity. CAIP network names are normalized only for identity/recovery compatibility; actual v2 facilitator requests retain their version and requirements. Receipts are exposed under both transport header names.
+
+Pending settlement responses and malformed success flags preserve the prepared journal for verified recovery. They must never release a payment as unpaid. Recovery validates both legacy and v2 network/amount fields. Do not roll back to pre-v2 code with v2 journal records or payment retries outstanding.
+
+Local regression tests cover legacy and v2 purchases, term tampering, retries, storage failure, pending/disconnected settlement, and recovery. A separate compatibility check used the official @x402/core and @x402/evm 2.14.0 client with a random unfunded account and local EIP-3009 signature verification; settlement was simulated. The configured production CDP facilitator advertises exact payments for both v1 Base and v2 eip155:8453. A real paid production transaction is still required to verify end-to-end settlement.

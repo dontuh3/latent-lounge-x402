@@ -21,6 +21,7 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { GAME_GUIDE, GENERATOR_VERSION, puzzleMetadata, puzzleFeedback } from "./puzzle-insights.js";
 import { paymentMiddleware } from "./payment-middleware.js";
+import { readPayment, legacyNetwork, receiptHeaders } from './payment-protocol.js';
 import { DurableStore } from "./durable-store.js";
 import { verifyRecovery } from "./payment-recovery.js";
 import rateLimit from "express-rate-limit";
@@ -306,10 +307,10 @@ const ANSWER_RECEIPTS = path.join(DATA_DIR,'answer-receipts.json');
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 function paymentIdentity(req) {
   try {
-    const payload=JSON.parse(Buffer.from(req.header('X-PAYMENT') || '', 'base64').toString());
+    const payload=readPayment(req);
     const auth=payload.payload.authorization;
     if(typeof payload.payload.signature !== 'string') return null;
-    return hash(JSON.stringify([payload.network,payload.scheme,payload.payload.signature.toLowerCase(),auth.from.toLowerCase(),auth.to.toLowerCase(),auth.nonce.toLowerCase(),String(auth.value),String(auth.validAfter),String(auth.validBefore)]));
+    return hash(JSON.stringify([legacyNetwork(payload.accepted?.network || payload.network),payload.accepted?.scheme || payload.scheme,payload.payload.signature.toLowerCase(),auth.from.toLowerCase(),auth.to.toLowerCase(),auth.nonce.toLowerCase(),String(auth.value),String(auth.validAfter),String(auth.validBefore)]));
   } catch { return null; }
 }
 function requestFingerprint(req) { return hash(JSON.stringify([req.method,req.originalUrl,req.body || {}])); }
@@ -357,7 +358,7 @@ async function recoverablePayments(req,res,next) {
     const id=paymentIdentity(req), stored=id && readJsonStore(PAYMENT_RECEIPTS,{})[id];
     if(stored) {
       if(stored.fingerprint!==requestFingerprint(req)) return res.status(409).json({error:'This payment was used for a different request.'});
-      res.setHeader('X-PAYMENT-RESPONSE',stored.receipt);
+      receiptHeaders(res,stored.receipt);
       return res.status(stored.status).type('json').send(stored.body);
     }
     await paymentHandler(req,res,next);
@@ -1130,7 +1131,7 @@ function writeNames(n) {
 // so the EIP-3009 authorization's `from` is the authenticated payer.
 function payerAddress(req) {
   try {
-    const decoded = JSON.parse(Buffer.from(req.header("X-PAYMENT"), "base64").toString("utf8"));
+    const decoded = readPayment(req);
     const from = decoded?.payload?.authorization?.from;
     return typeof from === "string" && /^0x[a-fA-F0-9]{40}$/.test(from) ? from.toLowerCase() : null;
   } catch { return null; }

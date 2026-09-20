@@ -2,6 +2,7 @@
 // Local changes: durable settlement hooks before payment and before response flush.
 // src/index.ts
 import { getAddress } from "viem";
+import { readPayment, v2Requirement, matchesV2, receiptHeaders } from './payment-protocol.js';
 import { exact } from "x402/schemes";
 import {
   computeRoutePatterns,
@@ -27,7 +28,6 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
     finally { clearTimeout(timer); }
   }
   const verify=(...args)=>bounded(service.verify,args), settle=(...args)=>bounded(service.settle,args), supported=(...args)=>bounded(service.supported,args);
-  const x402Version = 1;
   const routePatterns = computeRoutePatterns(routes);
   return async function paymentMiddleware2(req, res, next) {
     var _a;
@@ -115,7 +115,12 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
     } else {
       throw new Error(`Unsupported network: ${network}`);
     }
-    const payment = req.header("X-PAYMENT");
+    const x402Version = req.header('PAYMENT-SIGNATURE') ? 2 : 1;
+    const v2Requirements = paymentRequirements.map(v2Requirement);
+    // v2's canonical challenge is the header; preserve the v1 body for old clients.
+    res.setHeader('PAYMENT-REQUIRED', Buffer.from(JSON.stringify({x402Version:2,resource:{url:resourceUrl,description:description || '',mimeType:'application/json'},accepts:v2Requirements})).toString('base64'));
+    res.setHeader('Access-Control-Expose-Headers','PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-PAYMENT-RESPONSE');
+    const payment = req.header('PAYMENT-SIGNATURE') || req.header("X-PAYMENT");
     const userAgent = req.header("User-Agent") || "";
     const acceptHeader = req.header("Accept") || "";
     const isWebBrowser = acceptHeader.includes("text/html") && userAgent.includes("Mozilla");
@@ -154,18 +159,17 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
     }
     let decodedPayment;
     try {
-      decodedPayment = exact.evm.decodePayment(payment);
-      decodedPayment.x402Version = x402Version;
+      decodedPayment = readPayment(req);
+      if (x402Version===1) decodedPayment = exact.evm.decodePayment(payment);
     } catch (error) {
-      console.error(error);
       res.status(402).json({
         x402Version,
-        error: error instanceof Error ? error.message : "Invalid or malformed payment header",
+        error: "Invalid or malformed payment header",
         accepts: toJsonSafe(paymentRequirements)
       });
       return;
     }
-    const selectedPaymentRequirements = findMatchingPaymentRequirements(
+    const selectedPaymentRequirements = x402Version===2 ? v2Requirements.find(r=>matchesV2(decodedPayment,r)) : findMatchingPaymentRequirements(
       paymentRequirements,
       decodedPayment
     );
@@ -179,7 +183,7 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
     }
     try {
       const response = await verify(decodedPayment, selectedPaymentRequirements);
-      if (!response.isValid) {
+      if (response.isValid !== true) {
         res.status(402).json({
           x402Version,
           error: response.invalidReason,
@@ -189,10 +193,9 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
         return;
       }
     } catch (error) {
-      console.error(error);
       res.status(402).json({
         x402Version,
-        error: error instanceof Error ? error.message : "Payment verification failed",
+        error: "Payment verification failed",
         accepts: toJsonSafe(paymentRequirements)
       });
       return;
@@ -268,7 +271,9 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
     try {
       const settleResponse = await settle(decodedPayment, selectedPaymentRequirements);
       const responseHeader = settleResponseHeader(settleResponse);
+      if (typeof settleResponse.success !== 'boolean') throw new Error('Invalid settlement response');
       if (!settleResponse.success) {
+        if (settleResponse.transaction || settleResponse.errorReason==='settlement_pending') throw new Error('Settlement is uncertain');
         hooks.rejected?.(req,res);
         bufferedCalls = [];
         res.status(402).json({
@@ -280,14 +285,15 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
       }
       confirmed = true;
       hooks.confirmed?.(req,res,responseHeader);
-      res.setHeader("X-PAYMENT-RESPONSE", responseHeader);
+      res.removeHeader('PAYMENT-REQUIRED');
+      receiptHeaders(res,responseHeader);
     } catch (error) {
-      console.error("Settlement requires reconciliation:", error.message);
+      console.error("Settlement requires reconciliation; review the private recovery record.");
       hooks.uncertain?.(req,res,confirmed);
       bufferedCalls = [];
       res.status(503).json({
         x402Version,
-        error: error instanceof Error ? error.message : "Payment settlement failed",
+        error: "Payment settlement requires recovery. Do not repurchase.",
         accepts: toJsonSafe(paymentRequirements)
       });
       return;

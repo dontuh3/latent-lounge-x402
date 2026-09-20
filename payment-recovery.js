@@ -5,7 +5,8 @@ const abi=parseAbi([
   'function authorizationState(address authorizer, bytes32 nonce) view returns (bool)'
 ]);
 export async function verifyRecovery(record,input,rpcUrl,client=createPublicClient({transport:http(rpcUrl,{timeout:15000,retryCount:0})})) {
-  const expectedChain=record.payload.network==='base' ? 8453 : record.payload.network==='base-sepolia' ? 84532 : null;
+  const network=record.payload.accepted?.network || record.payload.network;
+  const expectedChain=['base','eip155:8453'].includes(network) ? 8453 : ['base-sepolia','eip155:84532'].includes(network) ? 84532 : null;
   if(!expectedChain || await client.getChainId()!==expectedChain) throw new Error('Recovery RPC network does not match payment.');
   const auth=record.payload.payload.authorization;
   const asset=record.requirements.asset.toLowerCase();
@@ -25,9 +26,9 @@ export async function verifyRecovery(record,input,rpcUrl,client=createPublicClie
     try {
       const event=decodeEventLog({abi,data:log.data,topics:log.topics});
       if(event.eventName==='AuthorizationUsed' && event.args.authorizer.toLowerCase()===auth.from.toLowerCase() && event.args.nonce.toLowerCase()===auth.nonce.toLowerCase()) authorization=true;
-      if(event.eventName==='Transfer' && event.args.from.toLowerCase()===auth.from.toLowerCase() && event.args.to.toLowerCase()===record.requirements.payTo.toLowerCase() && event.args.value===BigInt(record.requirements.maxAmountRequired)) transfer=true;
+      if(event.eventName==='Transfer' && event.args.from.toLowerCase()===auth.from.toLowerCase() && event.args.to.toLowerCase()===record.requirements.payTo.toLowerCase() && event.args.value===BigInt(record.requirements.amount || record.requirements.maxAmountRequired)) transfer=true;
     } catch { /* unrelated token event */ }
   }
   if(!authorization || !transfer) throw new Error('Transaction does not prove this payment.');
-  return {receipt:Buffer.from(JSON.stringify({success:true,transaction:input.transactionHash,network:record.payload.network,payer:auth.from})).toString('base64')};
+  return {receipt:Buffer.from(JSON.stringify({success:true,transaction:input.transactionHash,network,payer:auth.from})).toString('base64')};
 }

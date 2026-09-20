@@ -17,3 +17,10 @@ test('uncertain purchase may be released only after expiry and with an unused no
  await assert.rejects(verifyRecovery(record,{action:'release-expired'},'',client({used:true})));
  await assert.rejects(verifyRecovery({...record,payload:{...record.payload,payload:{authorization:{from,nonce,validBefore:'300'}}}},{action:'release-expired'},'',client()));
 });
+
+test('v2 recovery validates the CAIP network and atomic amount',async()=>{
+ const modern={payload:{x402Version:2,accepted:{network:'eip155:8453'},payload:record.payload.payload},requirements:{asset,payTo:to,amount:'20000'}};
+ assert.ok((await verifyRecovery(modern,{transactionHash:tx},'',client())).receipt);
+ await assert.rejects(verifyRecovery(modern,{transactionHash:tx},'',client({wrongAmount:true})));
+ await assert.rejects(verifyRecovery(modern,{transactionHash:tx},'',client({chain:1})));
+});

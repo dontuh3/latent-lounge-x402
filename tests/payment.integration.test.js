@@ -25,8 +25,9 @@ async function setup(t, fixtures = {}) {
     if (req.url === '/settle') {
       state.settlements++;
       if (state.disconnect) { req.socket.destroy(); return; }
+      if (state.settleOverride) return res.end(JSON.stringify(state.settleOverride));
       await new Promise(resolve => setTimeout(resolve, 150));
-      return res.end(JSON.stringify({ success: !state.reject, errorReason: state.reject ? 'test_rejected' : undefined, transaction: 'local-test', network: 'base-sepolia', payer: body.paymentPayload.payload.authorization.from }));
+      return res.end(JSON.stringify({ success: !state.reject, errorReason: state.reject ? 'test_rejected' : undefined, transaction: state.reject ? '' : 'local-test', network: body.paymentPayload.accepted?.network || 'base-sepolia', payer: body.paymentPayload.payload.authorization.from }));
     }
     res.writeHead(404).end('{}');
   });
@@ -178,4 +179,61 @@ test('answer storage failure preserves the attempt and does not partly update sc
   const result=await s.request('/api/check',null,{puzzleId:bought.body.puzzleId,guess:pending[bought.body.puzzleId].answer});
   assert.equal(result.status,503);assert.deepEqual(JSON.parse(fs.readFileSync(file)),pending);
   assert.equal(fs.existsSync(path.join(s.dir,'leaderboard.json')),false);
+});
+
+async function modernPayment(s, route) {
+  const quote=await fetch(s.base+route);
+  assert.equal(quote.status,402);
+  const challenge=JSON.parse(Buffer.from(quote.headers.get('PAYMENT-REQUIRED'),'base64'));
+  assert.equal(challenge.x402Version,2);
+  assert.equal((await quote.json()).x402Version,1);
+  return {x402Version:2,resource:challenge.resource,accepted:challenge.accepts[0],payload:{signature:'0x'+'1'.repeat(130),authorization:{from:a,to:receiver,value:challenge.accepts[0].amount,validAfter:'0',validBefore:String(Math.floor(Date.now()/1000)+600),nonce:'0x'+randomBytes(32).toString('hex')}}};
+}
+const encodePayment=p=>Buffer.from(JSON.stringify(p)).toString('base64');
+test('v2 purchase, identity, answer and cross-version replay settle exactly once',async t=>{
+  const s=await setup(t),route='/api/play/sequence?designation=modern';
+  const p=await modernPayment(s,route);
+  assert.equal(p.accepted.network,'eip155:84532');assert.equal(p.accepted.amount,'20000');
+  const buy=await fetch(s.base+route,{headers:{'PAYMENT-SIGNATURE':encodePayment(p)}});
+  assert.equal(buy.status,200);assert.ok(buy.headers.has('PAYMENT-RESPONSE'));
+  assert.equal(JSON.parse(Buffer.from(buy.headers.get('PAYMENT-RESPONSE'),'base64')).network,'eip155:84532');
+  const puzzle=await buy.json();
+  assert.equal(JSON.parse(fs.readFileSync(path.join(s.dir,'names.json'))).modern.wallet,a);
+  const old={x402Version:1,network:'base-sepolia',scheme:'exact',payload:p.payload};
+  for(const headers of [{'PAYMENT-SIGNATURE':encodePayment(p)},{'X-PAYMENT':encodePayment(old)}]){
+    const replay=await fetch(s.base+route,{headers});assert.equal(replay.status,200);assert.equal((await replay.json()).puzzleId,puzzle.puzzleId);
+  }
+  assert.equal(s.state.settlements,1);
+  const pending=JSON.parse(fs.readFileSync(path.join(s.dir,'pending-puzzles.json')));
+  const answer=await s.request('/api/check',null,{puzzleId:puzzle.puzzleId,guess:pending[puzzle.puzzleId].answer});assert.equal(answer.body.correct,true);
+});
+test('v2 rejects altered requirements, ambiguous headers and incorrect version without settlement',async t=>{
+  const s=await setup(t),route='/api/play/cipher';const p=await modernPayment(s,route);
+  for(const [key,value] of [['amount','1'],['network','eip155:1'],['payTo',b],['asset',b],['extra',{}]]){
+    const tampered=structuredClone(p);tampered.accepted[key]=value;
+    assert.equal((await fetch(s.base+route,{headers:{'PAYMENT-SIGNATURE':encodePayment(tampered)}})).status,402);
+  }
+  assert.equal((await fetch(s.base+route,{headers:{'PAYMENT-SIGNATURE':encodePayment(p),'X-PAYMENT':encodePayment(p)}})).status,402);
+  assert.equal((await fetch(s.base+route,{headers:{'PAYMENT-SIGNATURE':encodePayment({...p,x402Version:1})}})).status,402);
+  assert.equal(s.state.settlements,0);
+});
+test('v2 uncertainty keeps durable evidence and storage failure never settles',async t=>{
+  const s=await setup(t),route='/api/play/cipher';const p=await modernPayment(s,route);s.state.disconnect=true;
+  assert.equal((await fetch(s.base+route,{headers:{'PAYMENT-SIGNATURE':encodePayment(p)}})).status,503);
+  const record=JSON.parse(fs.readFileSync(path.join(s.dir,'transaction-journal.json')));
+  assert.equal(record.state,'prepared');assert.equal(record.payload.x402Version,2);assert.equal(record.requirements.amount,'20000');
+  assert.equal((await fetch(s.base+route)).status,503);
+  const other=await setup(t),q=await modernPayment(other,route);fs.mkdirSync(path.join(other.dir,'transaction-journal.json.tmp'));
+  assert.equal((await fetch(other.base+route,{headers:{'PAYMENT-SIGNATURE':encodePayment(q)}})).status,503);assert.equal(other.state.settlements,0);
+});
+
+test('pending and malformed settlement results preserve recovery evidence',async t=>{
+  for(const outcome of [{success:false,errorReason:'settlement_pending',transaction:'pending-test'},{success:'true',transaction:'invalid-test'}]){
+    const s=await setup(t),route='/api/play/cipher',p=await modernPayment(s,route);
+    s.state.settleOverride=outcome;
+    const result=await fetch(s.base+route,{headers:{'PAYMENT-SIGNATURE':encodePayment(p)}});
+    assert.equal(result.status,503);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(s.dir,'transaction-journal.json'))).state,'prepared');
+    assert.equal((await fetch(s.base+route)).status,503);assert.equal(s.state.settlements,1);
+  }
 });
