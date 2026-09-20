@@ -19,3 +19,6 @@ stats.json
 streaks.json
 tournament.json
 backups/
+transaction-journal.json
+payment-receipts.json
+answer-receipts.json

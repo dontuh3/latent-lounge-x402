@@ -35,3 +35,7 @@ wallet) probing free routes + the 402 paywall · `npm audit` policy.
   Triage new advisories — fix, or add with justification + review date.
 - `form-data` is pinned to a patched version via the `overrides` block; don't
   drop it without re-checking `npm audit`.
+
+## Current gate implementation
+
+The gate now runs through scripts/gate.mjs for Windows/Linux portability. The shell script delegates to it. npm run gate remains mandatory before push or release. Audit exceptions are advisory-specific and version-specific; the older package-wide description above is superseded by .audit-allowlist.json. MCP packages now include budget.js as well as index.js.

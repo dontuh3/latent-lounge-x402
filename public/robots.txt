@@ -1,0 +1,6 @@
+User-agent: *
+Allow: /
+Disallow: /api/admin/
+Disallow: /api/sample/
+Disallow: /api/check
+Sitemap: https://www.thelatentlounge.com/sitemap.xml

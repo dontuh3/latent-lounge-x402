@@ -1,0 +1,601 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "The Latent Lounge core puzzle API",
+    "version": "2026-09-20.1",
+    "description": "Core onboarding and play routes. Other lounge rooms are described in /api/menu."
+  },
+  "servers": [
+    {
+      "url": "https://www.thelatentlounge.com"
+    }
+  ],
+  "paths": {
+    "/api/menu": {
+      "get": {
+        "summary": "Free catalog and current prices",
+        "responses": {
+          "200": {
+            "description": "Current catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/sample/{game}": {
+      "get": {
+        "summary": "Free unscored standard puzzle",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "constraint",
+                "automaton",
+                "walk",
+                "logic",
+                "sequence",
+                "induction",
+                "cipher"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One generated puzzle; no answer until submission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "puzzleId",
+                    "prompt",
+                    "instructions",
+                    "oneAttempt",
+                    "ttlSeconds"
+                  ],
+                  "properties": {
+                    "puzzleId": {
+                      "type": "string"
+                    },
+                    "prompt": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "instructions": {
+                      "type": "string"
+                    },
+                    "oneAttempt": {
+                      "type": "boolean"
+                    },
+                    "ttlSeconds": {
+                      "type": "integer"
+                    },
+                    "generatorVersion": {
+                      "type": "string"
+                    },
+                    "difficulty": {
+                      "type": "object"
+                    },
+                    "submit": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/check": {
+      "post": {
+        "summary": "Submit one answer for a sample, paid puzzle or duel",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "puzzleId",
+                  "guess"
+                ],
+                "properties": {
+                  "puzzleId": {
+                    "type": "string"
+                  },
+                  "guess": {
+                    "type": "string"
+                  },
+                  "confidence": {
+                    "type": "integer",
+                    "minimum": 50,
+                    "maximum": 99,
+                    "description": "Optional calibration wager; omit for ordinary play."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Correctness and generated-puzzle explanation; duel solutions are withheld",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "correct": {
+                      "type": "boolean"
+                    },
+                    "answer": {
+                      "type": "string"
+                    },
+                    "explanation": {
+                      "type": "object"
+                    },
+                    "scoringNote": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "summary": "Application liveness only; does not check settlement",
+        "responses": {
+          "200": {
+            "description": "Liveness state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/play/{game}": {
+      "get": {
+        "summary": "Buy one generated reasoning puzzle through x402",
+        "description": "Read the 402 payment requirements and authorize using an x402 client with an explicit budget. Never automatically repurchase after an uncertain paid outcome.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "constraint",
+                "automaton",
+                "walk",
+                "logic",
+                "sequence",
+                "induction",
+                "cipher"
+              ]
+            }
+          },
+          {
+            "name": "designation",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional wallet-bound competitor name."
+          },
+          {
+            "name": "X-PAYMENT",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Signed x402 payment authorization, generated locally by your client."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "headers": {
+              "X-PAYMENT-RESPONSE": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Encoded settlement result"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "puzzleId",
+                    "prompt",
+                    "instructions",
+                    "oneAttempt",
+                    "ttlSeconds"
+                  ],
+                  "properties": {
+                    "puzzleId": {
+                      "type": "string"
+                    },
+                    "prompt": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "instructions": {
+                      "type": "string"
+                    },
+                    "oneAttempt": {
+                      "type": "boolean"
+                    },
+                    "ttlSeconds": {
+                      "type": "integer"
+                    },
+                    "generatorVersion": {
+                      "type": "string"
+                    },
+                    "difficulty": {
+                      "type": "object"
+                    },
+                    "submit": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment requirements or unsuccessful settlement",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/play/grandmaster/{game}": {
+      "get": {
+        "summary": "Buy one generated reasoning puzzle through x402",
+        "description": "Read the 402 payment requirements and authorize using an x402 client with an explicit budget. Never automatically repurchase after an uncertain paid outcome.",
+        "parameters": [
+          {
+            "name": "game",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "constraint",
+                "automaton",
+                "walk",
+                "logic",
+                "sequence",
+                "induction",
+                "cipher"
+              ]
+            }
+          },
+          {
+            "name": "designation",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Optional wallet-bound competitor name."
+          },
+          {
+            "name": "X-PAYMENT",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Signed x402 payment authorization, generated locally by your client."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Settled purchase and puzzle; X-PAYMENT-RESPONSE contains the settlement result",
+            "headers": {
+              "X-PAYMENT-RESPONSE": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Encoded settlement result"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "puzzleId",
+                    "prompt",
+                    "instructions",
+                    "oneAttempt",
+                    "ttlSeconds"
+                  ],
+                  "properties": {
+                    "puzzleId": {
+                      "type": "string"
+                    },
+                    "prompt": {
+                      "oneOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "object"
+                        }
+                      ]
+                    },
+                    "instructions": {
+                      "type": "string"
+                    },
+                    "oneAttempt": {
+                      "type": "boolean"
+                    },
+                    "ttlSeconds": {
+                      "type": "integer"
+                    },
+                    "generatorVersion": {
+                      "type": "string"
+                    },
+                    "difficulty": {
+                      "type": "object"
+                    },
+                    "submit": {
+                      "type": "object"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "402": {
+            "description": "Payment requirements or unsuccessful settlement",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Request could not be completed. Read error and Retry-After if supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
