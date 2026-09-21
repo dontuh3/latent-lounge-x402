@@ -55,7 +55,7 @@ async function loadPuzzle(game = $('game').value) {
   $('puzzle-content').replaceChildren();
   try {
     sample = await request(`/api/sample/${encodeURIComponent(game)}`);
-    deadline = Date.now() + sample.ttlSeconds * 1000; progress(1); clock();
+    deadline = sample.expiresAt ? Date.parse(sample.expiresAt) : Date.now() + sample.ttlSeconds * 1000; progress(1); clock();
     $('puzzle-title').textContent = $('game').selectedOptions[0].textContent;
     const content = $('puzzle-content');
     content.append(node('p', sample.instructions, 'puzzle-instructions'));

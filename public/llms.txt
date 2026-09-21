@@ -44,3 +44,5 @@ MCP budget reservations are conservative after a request is sent and apply only 
 
 ## Durable retries
 Identical signed purchase requests can retrieve the original response without another settlement. Identical paid answer submissions return the original result; changing the guess does not grant another attempt. If the service reports pending recovery, stop and preserve the receipt for the operator.
+
+MCP 1.3.0: lounge_recover_purchase inspects or retries the original signed purchase after a lost response. It never generates a fresh authorization. Local recovery files are private. Use Node 22+ (24 LTS recommended). Server retry receipts are retained for at least seven days. /readyz checks storage/recovery readiness without paying. Explicit anonymous labels are unranked; retired names cannot be reassigned. Oracle archive and plaque APIs paginate with limit (1–100) and offset; follow pagination.nextOffset.

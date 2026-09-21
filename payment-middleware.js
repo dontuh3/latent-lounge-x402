@@ -29,9 +29,11 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
   }
   const verify=(...args)=>bounded(service.verify,args), settle=(...args)=>bounded(service.settle,args), supported=(...args)=>bounded(service.supported,args);
   const routePatterns = computeRoutePatterns(routes);
-  return async function paymentMiddleware2(req, res, next) {
+  let verifications = 0;
+  const match = req => findMatchingRoute(routePatterns, req.path, req.method === 'HEAD' ? 'GET' : req.method.toUpperCase());
+  const middleware = async function paymentMiddleware2(req, res, next) {
     var _a;
-    const matchingRoute = findMatchingRoute(routePatterns, req.path, req.method.toUpperCase());
+    const matchingRoute = match(req);
     if (!matchingRoute) {
       return next();
     }
@@ -124,7 +126,7 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
     const userAgent = req.header("User-Agent") || "";
     const acceptHeader = req.header("Accept") || "";
     const isWebBrowser = acceptHeader.includes("text/html") && userAgent.includes("Mozilla");
-    if (!payment) {
+    if (!payment || req.method === 'HEAD') {
       if (isWebBrowser) {
         let displayAmount;
         if (typeof price === "string" || typeof price === "number") {
@@ -181,6 +183,8 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
       });
       return;
     }
+    if(verifications >= 8) return res.status(503).json({error:'Payment verification is busy. Retry later.'});
+    verifications++;
     try {
       const response = await verify(decodedPayment, selectedPaymentRequirements);
       if (response.isValid !== true) {
@@ -199,7 +203,8 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
         accepts: toJsonSafe(paymentRequirements)
       });
       return;
-    }
+    } finally { verifications--; }
+    if(hooks.beforeHandler && !await hooks.beforeHandler(req,res)) return;
     const originalWriteHead = res.writeHead.bind(res);
     const originalWrite = res.write.bind(res);
     const originalEnd = res.end.bind(res);
@@ -284,7 +289,12 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
         return;
       }
       confirmed = true;
-      hooks.confirmed?.(req,res,responseHeader);
+      const delivered = hooks.confirmed?.(req,res,responseHeader);
+      if(delivered !== undefined) {
+        bufferedCalls = [];
+        res.removeHeader('Content-Length'); res.removeHeader('ETag');
+        res.type('json').send(delivered);
+      }
       res.removeHeader('PAYMENT-REQUIRED');
       receiptHeaders(res,responseHeader);
     } catch (error) {
@@ -313,6 +323,8 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
       bufferedCalls = [];
     }
   };
+  middleware.isPaidRoute = req => Boolean(match(req));
+  return middleware;
 }
 export {
   paymentMiddleware

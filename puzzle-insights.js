@@ -1,4 +1,4 @@
-export const GENERATOR_VERSION = '2026-09-20.1';
+export const GENERATOR_VERSION = '2026-09-20.2';
 export const GAME_GUIDE = {
   constraint: { title: 'The seating problem', skill: 'Constraint reasoning', standard: '3 seats, 3 attributes, one satisfying arrangement', grandmaster: '4 seats, 3 attributes, one satisfying arrangement' },
   automaton: { title: 'The register machine', skill: 'Program execution', standard: '3 registers, 9–12 instructions', grandmaster: '4 registers, 16–22 instructions; conditions or an inverse problem' },
