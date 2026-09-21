@@ -19,6 +19,27 @@ export function readPayment(req) {
 export function matchesV2(payload, requirement) {
   return payload?.x402Version===2 && isDeepStrictEqual(payload.accepted,requirement);
 }
+export function bazaarExtension(method, input = {}, output = {}) {
+  const bodyMethod = ['POST','PUT','PATCH'].includes(method);
+  const field = bodyMethod ? 'body' : 'queryParams';
+  const fields = bodyMethod ? input.bodyFields || {} : input.queryParams || {};
+  const properties = Object.fromEntries(Object.entries(fields).map(([name,description]) => [name,{type:'string',description}]));
+  const inputInfo = {type:'http',method,[field]:bodyMethod ? Object.fromEntries(Object.keys(fields).map(name=>[name,'example'])) : {}};
+  const inputProperties = {type:{type:'string',const:'http'},method:{type:'string',const:method},[field]:{type:'object',properties}};
+  const required = ['type','method'];
+  if(bodyMethod) {
+    inputInfo.bodyType=input.bodyType || 'json';
+    inputProperties.bodyType={type:'string',const:inputInfo.bodyType};
+    required.push('bodyType','body');
+  }
+  return {bazaar:{
+    info:{input:inputInfo,output:{type:'json',example:output.example || {}}},
+    schema:{$schema:'https://json-schema.org/draft/2020-12/schema',type:'object',properties:{
+      input:{type:'object',properties:inputProperties,required,additionalProperties:false},
+      output:{type:'object',properties:{type:{type:'string',const:'json'},example:{type:'object',...output.schema}},required:['type']}
+    },required:['input']}
+  }};
+}
 export function receiptHeaders(res, receipt) {
   // Same settlement, both transport names. Normalize only the network spelling.
   const value=JSON.parse(Buffer.from(receipt,'base64').toString('utf8'));

@@ -2,7 +2,7 @@
 // Local changes: durable settlement hooks before payment and before response flush.
 // src/index.ts
 import { getAddress } from "viem";
-import { readPayment, v2Requirement, matchesV2, receiptHeaders } from './payment-protocol.js';
+import { readPayment, v2Requirement, matchesV2, receiptHeaders, bazaarExtension } from './payment-protocol.js';
 import { exact } from "x402/schemes";
 import {
   computeRoutePatterns,
@@ -118,7 +118,7 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
     const x402Version = req.header('PAYMENT-SIGNATURE') ? 2 : 1;
     const v2Requirements = paymentRequirements.map(v2Requirement);
     // v2's canonical challenge is the header; preserve the v1 body for old clients.
-    res.setHeader('PAYMENT-REQUIRED', Buffer.from(JSON.stringify({x402Version:2,resource:{url:resourceUrl,description:description || '',mimeType:'application/json'},accepts:v2Requirements})).toString('base64'));
+    res.setHeader('PAYMENT-REQUIRED', Buffer.from(JSON.stringify({x402Version:2,resource:{url:resourceUrl,description:description || '',mimeType:'application/json'},accepts:v2Requirements,extensions:bazaarExtension(req.method.toUpperCase(),inputSchema,outputSchema)})).toString('base64'));
     res.setHeader('Access-Control-Expose-Headers','PAYMENT-REQUIRED, PAYMENT-RESPONSE, X-PAYMENT-RESPONSE');
     const payment = req.header('PAYMENT-SIGNATURE') || req.header("X-PAYMENT");
     const userAgent = req.header("User-Agent") || "";

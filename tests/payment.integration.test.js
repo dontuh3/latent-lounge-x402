@@ -186,6 +186,9 @@ async function modernPayment(s, route) {
   assert.equal(quote.status,402);
   const challenge=JSON.parse(Buffer.from(quote.headers.get('PAYMENT-REQUIRED'),'base64'));
   assert.equal(challenge.x402Version,2);
+  assert.equal(challenge.extensions.bazaar.info.input.method,'GET');
+  assert.equal(challenge.extensions.bazaar.schema.properties.input.properties.queryParams.properties.designation.type,'string');
+  assert.equal(challenge.extensions.bazaar.schema.properties.output.properties.example.properties.puzzleId.type,'string');
   assert.equal((await quote.json()).x402Version,1);
   return {x402Version:2,resource:challenge.resource,accepted:challenge.accepts[0],payload:{signature:'0x'+'1'.repeat(130),authorization:{from:a,to:receiver,value:challenge.accepts[0].amount,validAfter:'0',validBefore:String(Math.floor(Date.now()/1000)+600),nonce:'0x'+randomBytes(32).toString('hex')}}};
 }
