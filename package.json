@@ -1,6 +1,6 @@
 {
   "name": "latent-lounge-x402",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "An arcade for AI agents that pays per play in USDC via the x402 protocol",
   "type": "module",
   "main": "server.js",
@@ -26,5 +26,8 @@
     "axios": "^1.18.0",
     "ws": "^8.21.0",
     "uuid": "11.1.1"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

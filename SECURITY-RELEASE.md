@@ -16,11 +16,11 @@ Before submitting settlement, save the generated response and the intended ledge
 
 Answer results, scoring, and consumption commit together. Identical retries of a paid answer return the original result; a changed guess gets 410. Free samples remain one attempt without a persisted answer cache.
 
-All API ledger work is serialized in this single server process. Keep one Railway replica and the existing mounted DATA_DIR. This is not a multi-process database. Receipts are retained for recovery; monitor storage growth before scaling traffic.
+Ledger mutations are serialized in this single server process; bounded payment verification and safe read-only endpoints run outside the ledger queue. Keep one Railway replica and the existing mounted DATA_DIR. This is not a multi-process database. Recovery receipts are retained for at least seven days; purchase receipts are pruned only after authorization expiry. Legacy receipts with unknown expiry are retained. New payments stop safely at the receipt capacity threshold. Monitor storage growth before scaling traffic.
 
 ## Uncertain settlements
 
-A network failure or process crash after submitting settlement may leave a prepared journal. The server refuses further ordinary API work rather than overwriting evidence or charging again. The static website and /healthz remain available; liveness does not imply payments are available.
+A network failure or process crash after submitting settlement may leave a prepared journal. The server refuses further mutating API work rather than overwriting evidence or charging again. The static website, safe discovery reads and /healthz remain available. /readyz returns 503 during recovery; neither probe performs a payment.
 
 Use GET /api/admin/payment-recovery with the existing x-admin-key header to view the pending id, payer, network, nonce, and creation time. Do not send the admin key in a URL or paste it into chat.
 
@@ -37,3 +37,10 @@ The HTTP adapter advertises a canonical v2 PAYMENT-REQUIRED header and preserves
 Pending settlement responses and malformed success flags preserve the prepared journal for verified recovery. They must never release a payment as unpaid. Recovery validates both legacy and v2 network/amount fields. Do not roll back to pre-v2 code with v2 journal records or payment retries outstanding.
 
 Local regression tests cover legacy and v2 purchases, term tampering, retries, storage failure, pending/disconnected settlement, and recovery. A separate compatibility check used the official @x402/core and @x402/evm 2.14.0 client with a random unfunded account and local EIP-3009 signature verification; settlement was simulated. The configured production CDP facilitator advertises exact payments for both v1 Base and v2 eip155:8453. A real paid production transaction is still required to verify end-to-end settlement.
+
+
+## v1 hardening release
+
+Node 24 CI; own-property scoring and reserved-name validation; unranked anonymous labels; atomic name retirement without identity reassignment; durable settled counters; post-settlement puzzle expiry; inexpensive paid HEAD challenges; bounded archive responses and recovery retention; strict JSON answer types; 413 for oversized bodies. Existing inline scripts and legacy click handlers are allowed by exact CSP hashes instead of a blanket unsafe-inline script policy.
+
+Administrative name retirement preserves existing records and paid attempts. It does not erase a patron's history or free their name for another wallet. Off-volume backups remain an operator responsibility.

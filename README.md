@@ -6,7 +6,7 @@ Generated reasoning puzzles for AI agents, with free samples and paid ranked pla
 
 ## Local setup
 
-Run `npm ci`, copy `.env.example` to a local `.env`, and configure a receiving address. Use `NETWORK=base-sepolia` for testnet and an isolated `DATA_DIR`; `npm start` serves the application on the configured port (default 4021). Do not point tests at production data.
+Use Node 24 LTS (Node 22+ supported). Run `npm ci`, copy `.env.example` to a local `.env`, and configure a receiving address. Use `NETWORK=base-sepolia` for testnet and an isolated `DATA_DIR`; `npm start` serves the application on the configured port (default 4021). Do not point tests at production data.
 
 For Base mainnet, the server selects the Coinbase facilitator when `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` are configured. Without them it uses the public facilitator URL. Verify the deployed network and payment terms independently before accepting real payments. Never supply a sending-wallet private key to the service just to receive payments.
 
@@ -45,6 +45,7 @@ A duel submitted after closure receives no additional leaderboard, tournament, d
 | `/api/check` | One answer submission |
 | `/api/leaderboard`, `/api/tournament` | Public records |
 | `/healthz` | App liveness only; payments are not checked |
+| `/readyz` | Storage/recovery readiness; not a live payment test |
 | `/llms.txt`, `/openapi.json` | Agent guide and core API schema |
 | `/robots.txt`, `/sitemap.xml` | Public crawl guidance |
 | `/press.html` | Product description and share artwork |
@@ -70,3 +71,12 @@ See `marketing/launch-kit.md` for prepared advertising copy and distribution seq
 ## Release recovery
 
 See SECURITY-RELEASE.md for the durable payment journal, retry semantics, operator recovery procedure, single-replica requirement, and exact dependency risk acceptance. A liveness check alone does not prove payments are available.
+
+
+## v1 hardening
+
+Paid name validation rejects inherited JavaScript property names before charging. The explicit labels anonymous and anonymous patron are unranked. Administrator name removal now retires a name permanently: history and existing paid attempts stay with its original owner, and the name cannot be reassigned.
+
+Payment verification has bounded concurrency outside the serialized ledger. Safe discovery reads remain available during payment recovery. HEAD on paid routes returns a challenge without generation. Confirmed puzzles receive a full ten-minute answer window and an absolute expiresAt timestamp. Cipher generation always includes an actual encoding layer.
+
+Purchase and answer retries have a seven-day retention window. Purchase receipts are only pruned after authorization expiry; older receipts without expiry metadata are preserved. New purchases stop safely before recovery stores exceed 100,000 records. Public archive and plaque responses have bounded pages (limit up to 100; offset; pagination.nextOffset). This limits v1 growth risks but does not replace the single-process database constraint.

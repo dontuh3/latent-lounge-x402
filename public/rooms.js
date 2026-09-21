@@ -71,7 +71,7 @@
     get('wall-state').textContent = 'Loading inscriptions…'; target.replaceChildren();
     try {
       const data = await read('/api/plaques');
-      get('wall-state').textContent = `${data.wall.length} inscriptions · Newest first · Showing up to 30`;
+      get('wall-state').textContent = `${data.pagination?.total ?? data.wall.length} inscriptions · Newest first · Showing up to 30`;
       for (const plaque of data.wall.slice(-30).reverse()) target.append(card(plaque.designation,plaque.inscription,`PLAQUE ${plaque.id}`));
       if (!data.wall.length) empty(target, 'A quiet wall, waiting for its first inscription.');
     } catch { get('wall-state').textContent = 'The wall is temporarily unavailable. Try Refresh wall.'; }

@@ -21,12 +21,17 @@ async function setup(t, fixtures = {}) {
     let raw = ''; for await (const c of req) raw += c;
     const body = JSON.parse(raw || '{}');
     res.setHeader('Content-Type', 'application/json');
-    if (req.url === '/verify') return res.end(JSON.stringify({ isValid: true, payer: body.paymentPayload.payload.authorization.from }));
+    if (req.url === '/verify') {
+      state.verifyEntered=true;
+      if(state.verifyWait) await state.verifyWait;
+      return res.end(JSON.stringify({ isValid: !state.verifyReject, payer: body.paymentPayload.payload.authorization.from }));
+    }
     if (req.url === '/settle') {
       state.settlements++;
       if (state.disconnect) { req.socket.destroy(); return; }
       if (state.settleOverride) return res.end(JSON.stringify(state.settleOverride));
       await new Promise(resolve => setTimeout(resolve, 150));
+      state.settledAt=Date.now();
       return res.end(JSON.stringify({ success: !state.reject, errorReason: state.reject ? 'test_rejected' : undefined, transaction: state.reject ? '' : 'local-test', network: body.paymentPayload.accepted?.network || 'base-sepolia', payer: body.paymentPayload.payload.authorization.from }));
     }
     res.writeHead(404).end('{}');
@@ -34,9 +39,9 @@ async function setup(t, fixtures = {}) {
   facilitator.listen(0, '127.0.0.1'); await once(facilitator, 'listening');
   const slot = net.createServer(); slot.listen(0, '127.0.0.1'); await once(slot, 'listening'); const port = slot.address().port; await new Promise(r => slot.close(r));
   const logFile = path.join(dir, 'server.log'); const logFd = fs.openSync(logFile, 'w');
-  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, PAY_TO_ADDRESS: receiver, NETWORK: 'base-sepolia', PORT: String(port), DATA_DIR: dir, FACILITATOR_URL: `http://127.0.0.1:${facilitator.address().port}`, BACKUP_FIRST_RUN_MS: '600000' }, stdio: ['ignore', logFd, logFd] });
+  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ADMIN_KEY:'local-test-admin', PAY_TO_ADDRESS: receiver, NETWORK: 'base-sepolia', PORT: String(port), DATA_DIR: dir, FACILITATOR_URL: `http://127.0.0.1:${facilitator.address().port}`, BACKUP_FIRST_RUN_MS: '600000' }, stdio: ['ignore', logFd, logFd] });
   fs.closeSync(logFd); const readLog = () => fs.readFileSync(logFile, 'utf8');
-  t.after(async () => { child.kill(); if(child.exitCode===null) await once(child,'exit'); facilitator.closeAllConnections(); await new Promise(r => facilitator.close(r)); fs.rmSync(dir,{recursive:true,force:true}); });
+  t.after(async () => { child.kill(); if(child.exitCode===null) await once(child,'exit'); facilitator.closeAllConnections(); await new Promise(r => facilitator.close(r)); const target=fs.realpathSync(dir), parent=fs.realpathSync(os.tmpdir()); if(path.dirname(target)===parent && path.basename(target).startsWith('lounge-test-')) fs.rmSync(target,{recursive:true,force:true}); });
   const until = Date.now() + 30000; while (!readLog().includes('open on port') && Date.now() < until && child.exitCode === null) await new Promise(r => setTimeout(r, 25));
   assert.match(readLog(), /open on port/, readLog());
   const base = `http://127.0.0.1:${port}`;
@@ -88,7 +93,7 @@ test('every free generator withholds its solution until submission', async t => 
     const sample = await s.request(`/api/sample/${game}`);
     assert.equal(sample.status, 200, game);
     for (const key of ['answer','solution','explanation']) assert.equal(sample.body[key], undefined, `${game} leaked ${key}`);
-    assert.equal(sample.body.generatorVersion, '2026-09-20.1');
+    assert.equal(sample.body.generatorVersion, '2026-09-20.2');
     assert.equal(sample.body.difficulty.calibrated, false);
     const result = await s.request('/api/check', null, {puzzleId:sample.body.puzzleId,guess:'deliberately incorrect'});
     assert.equal(result.status,200); assert.equal(result.body.correct,false);
@@ -239,4 +244,77 @@ test('pending and malformed settlement results preserve recovery evidence',async
     assert.equal(JSON.parse(fs.readFileSync(path.join(s.dir,'transaction-journal.json'))).state,'prepared');
     assert.equal((await fetch(s.base+route)).status,503);assert.equal(s.state.settlements,1);
   }
+});
+
+test('slow rejected verification does not block browsing or answering',async t=>{
+  const s=await setup(t); const sample=await s.request('/api/sample/walk');
+  let release; s.state.verifyWait=new Promise(resolve=>{release=resolve;});s.state.verifyReject=true;
+  const payment=s.request('/api/play/cipher',a);
+  while(!s.state.verifyEntered) await new Promise(resolve=>setTimeout(resolve,10));
+  try {
+    const res=await fetch(s.base+'/api/menu',{signal:AbortSignal.timeout(1500)});assert.equal(res.status,200);
+    const answer=await fetch(s.base+'/api/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({puzzleId:sample.body.puzzleId,guess:'wrong'}),signal:AbortSignal.timeout(1500)});assert.equal(answer.status,200);
+  } finally {release();}
+  assert.equal((await payment).status,402);assert.equal(s.state.settlements,0);
+});
+
+test('reserved names are rejected before charging; existing paid reserved-name attempts still score',async t=>{
+ const s=await setup(t,{'pending-puzzles.json':{legacy:{settled:true,answer:'7',lbKey:'sequence',designation:'toString',issuedAt:Date.now(),expires:Date.now()+600000}}});
+ for(const name of ['toString','hasOwnProperty','__proto__','constructor']) assert.equal((await s.request('/api/play/sequence?designation='+name,a)).status,403);
+ assert.equal(s.state.settlements,0);
+ assert.equal((await s.request('/api/check',null,{puzzleId:'legacy',guess:'7'})).body.correct,true);
+ assert.equal((await s.request('/api/leaderboard/sequence')).body.board[0].designation,'toString');
+});
+
+test('shared anonymous labels never score or claim identities; settlement counts once',async t=>{
+ const s=await setup(t);
+ for(const name of ['anonymous','anonymous patron']) {
+  const route='/api/play/sequence?designation='+encodeURIComponent(name),p=await s.request(route,a);
+  assert.equal(p.status,200);assert.equal(typeof p.body.expiresAt,'string');
+  const record=JSON.parse(fs.readFileSync(path.join(s.dir,'pending-puzzles.json')))[p.body.puzzleId];
+  assert.equal(record.designation,null);assert.equal(record.expires-record.issuedAt,600000);
+  assert.ok(record.issuedAt>=s.state.settledAt); // settlement latency does not consume solve time
+  const replay=await fetch(s.base+route,{headers:{'X-PAYMENT':p.payment}});assert.equal(replay.status,200);
+  await s.request('/api/check',null,{puzzleId:p.body.puzzleId,guess:record.answer});
+ }
+ assert.deepEqual((await s.request('/api/leaderboard/sequence')).body.board,[]);
+ const stats=await(await fetch(s.base+'/api/admin/stats',{headers:{'x-admin-key':'local-test-admin'}})).json();
+ assert.equal(stats.anonPlays.sequence.settled,2);assert.equal(stats.puzzleFunnel.byGame.sequence.paidSettled,2);assert.equal(s.state.settlements,2);
+});
+
+test('retired names keep history and cannot be reassigned; retirement fails atomically',async t=>{
+ const fixtures={'names.json':{retired:{designation:'retired',wallet:a,claimedAt:new Date().toISOString()}},'tournament.json':{date:new Date().toISOString().slice(0,10),scores:{retired:{solved:7,plays:7}},history:[]}};
+ const s=await setup(t,fixtures);
+ const res=await fetch(s.base+'/api/admin/name/retired',{method:'DELETE',headers:{'x-admin-key':'local-test-admin'}});assert.equal(res.status,200);
+ for(const wallet of [a,b])assert.equal((await s.request('/api/play/sequence?designation=retired',wallet)).status,403);
+ assert.equal(s.state.settlements,0);assert.equal(JSON.parse(fs.readFileSync(path.join(s.dir,'tournament.json'))).scores.retired.solved,7);
+ const other=await setup(t,fixtures);fs.mkdirSync(path.join(other.dir,'transaction-journal.json.tmp'));
+ assert.equal((await fetch(other.base+'/api/admin/name/retired',{method:'DELETE',headers:{'x-admin-key':'local-test-admin'}})).status,503);
+ assert.equal(JSON.parse(fs.readFileSync(path.join(other.dir,'names.json'))).retired.retiredAt,undefined);
+});
+
+test('readiness distinguishes recovery while free discovery remains accessible',async t=>{
+ const s=await setup(t);assert.equal((await s.request('/readyz')).status,200);s.state.disconnect=true;
+ assert.equal((await s.request('/api/play/cipher',a)).status,503);
+ assert.equal((await s.request('/readyz')).status,503);assert.equal((await s.request('/healthz')).status,200);
+ assert.equal((await s.request('/api/menu')).status,200);assert.equal((await s.request('/api/play/walk',b)).status,503);
+});
+
+test('all paid HEAD routes challenge without generating or charging and large JSON is 413',async t=>{
+ const s=await setup(t);
+ for(const tier of ['','grandmaster/'])for(const game of ['sequence','cipher','logic','induction','automaton','walk','constraint'])assert.equal((await fetch(s.base+'/api/play/'+tier+game,{method:'HEAD'})).status,402);
+ assert.equal(fs.existsSync(path.join(s.dir,'pending-puzzles.json')),false);assert.equal(s.state.settlements,0);
+ const big=await fetch(s.base+'/api/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({guess:'x'.repeat(17000)})});assert.equal(big.status,413);
+});
+
+test('archives page without exposing hidden records and old expired recovery receipts are bounded',async t=>{
+ const plaques=Array.from({length:205},(_,i)=>({id:i+1,designation:'visitor',inscription:'public',engraved:new Date().toISOString()}));
+ const old={fingerprint:'old',body:'{}',status:200,at:'2000-01-01T00:00:00Z',validBefore:1};
+ const s=await setup(t,{'plaques.json':plaques,'payment-receipts.json':{expired:old,legacy:{...old,validBefore:undefined},stillValid:{...old,validBefore:Math.floor(Date.now()/1000)+86400}}});
+ const page=(await s.request('/api/plaques?limit=100&offset=0')).body;
+ assert.equal(page.wall.length,100);assert.equal(page.pagination.total,205);assert.equal(page.pagination.nextOffset,100);
+ const last=(await s.request('/api/plaques?limit=100&offset=200')).body;assert.equal(last.wall.length,5);assert.equal(last.pagination.nextOffset,null);
+ assert.equal((await s.request('/api/play/sequence',a)).status,200);
+ const records=JSON.parse(fs.readFileSync(path.join(s.dir,'payment-receipts.json')));
+ assert.equal(records.expired,undefined);assert.ok(records.legacy);assert.ok(records.stillValid);
 });
