@@ -1477,11 +1477,9 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
   });
 }
 
-// FREE sample: one unscored puzzle per request — no wallet, no payment, rate-limited.
-// The "first move's on the house" funnel: taste the loop, then pay to compete.
-// designation + lbKey are null, so /api/check grades it but records nothing (no
-// leaderboard, no streak, no name binding). The paid generator still gates real play.
-// Free samples are a daily demo: one puzzle per family per UTC day, shared by every visitor.
+// FREE sample: unscored, no wallet, no payment, rate-limited. designation + lbKey are
+// null, so /api/check grades it but records nothing (no leaderboard, no streak, no name
+// binding). Free samples are a daily demo: one puzzle per family per UTC day, shared by every visitor.
 // A free path that minted fresh puzzles (with answers revealed by /api/check) gave away the
 // exact thing /api/play sells, so fresh generation is reserved for paid plays.
 let sampleDemoDay = null;
