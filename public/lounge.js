@@ -23,7 +23,7 @@ function clock() {
   $('sample-clock').textContent = sample ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')} LEFT` : '';
   if (sample && seconds === 0 && !busy) {
     sample = null; $('answer-form').hidden = true;
-    $('sample-status').textContent = 'Time is up. Generate another free puzzle to try again.';
+    $('sample-status').textContent = 'Time is up. Reload today’s demo to try again.';
     progress(0);
   }
 }
@@ -69,7 +69,7 @@ async function loadPuzzle(game = $('game').value) {
     else renderValue(content,'Puzzle',sample.prompt);
     if (sample.inputs) renderValue(content,'Inputs',sample.inputs);
     if (sample.layers) renderValue(content,'Layers',sample.layers);
-    $('sample-status').textContent = 'Free sample · Standard difficulty · One attempt · No standings affected';
+    $('sample-status').textContent = 'Today’s free demo · Same for every visitor · Standard difficulty · No standings affected';
     $('guess').value = ''; $('guess').disabled = false; $('answer-form').hidden = false; $('guess').focus({ preventScroll: true });
   } catch(error) { sample = null; clock(); progress(0); $('puzzle-title').textContent = 'PLEASE TRY AGAIN'; $('sample-status').textContent = error.message; $('sample-status').classList.add('error'); }
   finally { setBusy(false); }
@@ -79,7 +79,7 @@ if ($('load-puzzle')) {
   if ([...$('game').options].some(option => option.value === selected)) $('game').value = selected;
   $('load-puzzle').addEventListener('click', () => loadPuzzle());
   document.querySelectorAll('[data-start]').forEach(button => button.addEventListener('click', e => { e.preventDefault(); if (busy) return; $('try').scrollIntoView(); loadPuzzle(button.dataset.start); }));
-  $('game').addEventListener('change', () => { if (sample) $('sample-status').textContent = 'Generate the selected game to replace your current free puzzle. Your current answer still applies to the displayed puzzle.'; });
+  $('game').addEventListener('change', () => { if (sample) $('sample-status').textContent = 'Load the selected game to replace your current demo. Your current answer still applies to the displayed puzzle.'; });
   $('answer-form').addEventListener('submit', async e => {
     e.preventDefault(); if (!sample || busy) return;
     const attempt = sample; setBusy(true); $('sample-status').classList.remove('error');
@@ -94,10 +94,10 @@ if ($('load-puzzle')) {
         for (const [key,value] of Object.entries(result.explanation)) if (key !== 'summary') renderValue(feedback,key,value);
       } else feedback.append(node('p', result.remark));
       const actions = node('div', undefined, 'feedback-actions');
-      const again = node('button', 'Another on the house ↗', 'button primary'); again.type = 'button'; again.addEventListener('click', () => loadPuzzle(attempt.game));
+      const again = node('button', 'Try another family ↗', 'button primary'); again.type = 'button'; again.addEventListener('click', () => { $('game').focus(); progress(0); });
       const next = node('a','Bring your agent ↗','button'); next.href='/connect.html'; actions.append(again, next); feedback.append(actions); feedback.hidden=false;
-      $('sample-status').textContent='Sample completed. No standings changed. Generate another to keep exploring.';
-    } catch (error) { $('sample-status').textContent = `${error.message} If the response was lost, this attempt may already be consumed. You can generate a new free puzzle.`; $('sample-status').classList.add('error'); }
+      $('sample-status').textContent='Demo completed. No standings changed. Each family has one shared demo per UTC day — try another family, or bring your agent for fresh puzzles.';
+    } catch (error) { $('sample-status').textContent = `${error.message} If the response was lost, this attempt may already be consumed. You can reload today’s demo.`; $('sample-status').classList.add('error'); }
     finally { setBusy(false); }
   });
   request('/api/menu').then(menu => { document.querySelectorAll('[data-price]').forEach(e => { if (menu.pricing?.[e.dataset.price]) e.textContent=menu.pricing[e.dataset.price]; }); }).catch(() => {});
