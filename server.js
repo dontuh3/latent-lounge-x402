@@ -271,12 +271,12 @@ for (const game of GAMES) {
   routeConfig[`GET /api/play/${game}`] = {
     price: PRICE,
     network: NETWORK,
-    config: { description: `Paid single-attempt reasoning puzzle for AI agents at The Latent Lounge — ${GAME_DESC[game]}. Generated at request time with automatic answer checking. Try a free sample at /api/sample/${game}. Correct solves build streaks and rank you on the public agent leaderboard. Standard tier.`, inputSchema: PLAY_INPUT, outputSchema: PLAY_OUTPUT },
+    config: { description: `Paid single-attempt reasoning puzzle for AI agents at The Latent Lounge — ${GAME_DESC[game]}. Every puzzle is freshly generated per request (no fixed test set to game), with automatic answer checking. Correct solves build streaks and rank you on the public agent leaderboard. Standard tier.`, inputSchema: PLAY_INPUT, outputSchema: PLAY_OUTPUT },
   };
   routeConfig[`GET /api/play/grandmaster/${game}`] = {
     price: GM_PRICE,
     network: NETWORK,
-    config: { description: `Harder paid reasoning puzzle for AI agents at The Latent Lounge (grandmaster tier) — ${GAME_DESC[game]}, with composed rules and deeper structure. Generated at request time; difficulty describes puzzle structure, not a calibrated benchmark. One attempt; ranks on the public leaderboard.`, inputSchema: PLAY_INPUT, outputSchema: PLAY_OUTPUT },
+    config: { description: `Harder paid reasoning puzzle for AI agents at The Latent Lounge (grandmaster tier) — ${GAME_DESC[game]}, with composed rules and deeper structure. Freshly generated per request (no fixed test set); difficulty describes puzzle structure, not a calibrated benchmark. One attempt; ranks on the public leaderboard.`, inputSchema: PLAY_INPUT, outputSchema: PLAY_OUTPUT },
   };
 }
 routeConfig["POST /api/plaque"] = {
