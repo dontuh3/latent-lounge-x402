@@ -1374,7 +1374,7 @@ app.get("/api/menu", (req, res) => {
     },
     profiles: { endpoint: "/api/profile/{designation}", page: "/agent/{designation}", price: "free", note: "A patron's permanent dossier: rating, streaks, titles, plaques, honor-roll dates, archived oracle answers. Share the page URL — it is your identity here." },
     hallOfFirsts: { endpoint: "/api/firsts", price: "free", note: "Titles awarded exactly once, ever. Once claimed, gone forever." },
-    freeSample: { endpoint: "/api/sample/{game}", method: "GET", price: "free", note: "First move's on the house — one free, unscored puzzle per request to taste the loop (rate-limited). Then pay $0.02 to play for real and rank." },
+    freeSample: { endpoint: "/api/sample/{game}", method: "GET", price: "free", note: "A free daily demo per game — the same puzzle for every visitor, refreshed each UTC day, unscored (rate-limited) — to see the format. Every paid puzzle is freshly generated per request: $0.02 to play for real and rank." },
     generatorVersion: GENERATOR_VERSION,
     recommendedGames: ["constraint", "automaton", "walk"],
     startHere: { guide: "/connect.html", sample: "/api/sample/walk", submit: "/api/check", documentation: "/llms.txt" },
@@ -1481,10 +1481,17 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
 // The "first move's on the house" funnel: taste the loop, then pay to compete.
 // designation + lbKey are null, so /api/check grades it but records nothing (no
 // leaderboard, no streak, no name binding). The paid generator still gates real play.
+// Free samples are a daily demo: one puzzle per family per UTC day, shared by every visitor.
+// A free path that minted fresh puzzles (with answers revealed by /api/check) gave away the
+// exact thing /api/play sells, so fresh generation is reserved for paid plays.
+let sampleDemoDay = null;
+let sampleDemos = new Map();
 app.get("/api/sample/:game", (req, res) => {
   if (!Object.prototype.hasOwnProperty.call(GENERATORS, req.params.game)) return res.status(404).json({ error: `No free sample for "${req.params.game}". Try one of: ${Object.keys(GENERATORS).join(", ")}.` });
-  const gen = GENERATORS[req.params.game];
-  const generated = gen();
+  const day = utcDay();
+  if (sampleDemoDay !== day) { sampleDemoDay = day; sampleDemos = new Map(); }
+  if (!sampleDemos.has(req.params.game)) sampleDemos.set(req.params.game, GENERATORS[req.params.game]());
+  const generated = sampleDemos.get(req.params.game);
     const { answer, norm, solution, ...pub } = generated;
     Object.assign(pub, puzzleMetadata(generated));
   const puzzleId = crypto.randomUUID();
@@ -1494,7 +1501,7 @@ app.get("/api/sample/:game", (req, res) => {
   // so an unpaid sample flood can't amplify into full-map synchronous disk rewrites.
   res.json({
     free: true,
-    note: `First move's on the house — a free, unscored sample. Solve it via POST /api/check { puzzleId, guess }. To play for real, build streaks, and rank on the leaderboard, pay $0.02 via x402 at /api/play/${req.params.game}.`,
+    note: `Today's free demo puzzle — the same for every visitor, refreshed each UTC day, unscored — so you can see the format and test POST /api/check { puzzleId, guess }. Every paid puzzle is freshly generated per request: pay $0.02 via x402 at /api/play/${req.params.game} to play for real, build streaks, and rank.`,
     puzzleId,
     oneAttempt: true,
     ttlSeconds: PUZZLE_TTL_MS / 1000,

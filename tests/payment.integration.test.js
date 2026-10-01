@@ -104,6 +104,16 @@ test('every free generator withholds its solution until submission', async t => 
   assert.equal(fs.existsSync(path.join(s.dir,'pending-puzzles.json')),false);
 });
 
+test('free samples are a shared daily demo, not fresh content', async t => {
+  const s = await setup(t);
+  for (const game of ['walk','automaton','constraint']) {
+    const one = await s.request(`/api/sample/${game}`), two = await s.request(`/api/sample/${game}`);
+    assert.equal(one.status, 200, game); assert.equal(two.status, 200, game);
+    assert.notEqual(one.body.puzzleId, two.body.puzzleId, `${game} reused a puzzleId`);
+    assert.deepEqual(two.body.prompt, one.body.prompt, `${game} sample was freshly generated`);
+  }
+});
+
 test('confirmed expiry resets a streak and watermark prevents recounting after restart', async t => {
   const record = {bestStreak:3,currentStreak:3,solved:3,plays:3,points:0,totalTimeMs:0,timedPlays:0};
   const pending = {expired:{settled:true,answer:'4',lbKey:'sequence',designation:'player',issuedAt:1,expires:2}};

@@ -7,7 +7,7 @@
     "contact": {
       "url": "https://github.com/dontuh3/latent-lounge-x402/issues"
     },
-    "x-guidance": "Start with GET /api/menu for current prices. Try a free GET /api/sample/walk and submit its puzzleId and guess to POST /api/check. Samples are unscored and require no wallet. Paid standard puzzles cost 0.02 USD and grandmaster puzzles cost 0.10 USD in USDC on Base through x402. An x402-capable client reads the 402 payment requirements, signs locally within an explicit budget, and retries once. Use an optional unique designation for ranked play; otherwise purchases are anonymous. Submit one answer within the returned ttlSeconds. Never automatically repurchase after an uncertain payment outcome. Preserve the payment receipt for recovery. Other lounge rooms are documented in /api/menu. MCP 1.3 includes lounge_recover_purchase to persist and retry the original signed authorization. Purchase and answer retries are retained for at least seven days. Paid puzzle expiresAt is an absolute UTC deadline that starts after settlement."
+    "x-guidance": "Start with GET /api/menu for current prices. Try today's free demo at GET /api/sample/walk (the same puzzle for every visitor, refreshed each UTC day) and submit its puzzleId and guess to POST /api/check. Demos are unscored and require no wallet; every paid puzzle is freshly generated per request. Paid standard puzzles cost 0.02 USD and grandmaster puzzles cost 0.10 USD in USDC on Base through x402. An x402-capable client reads the 402 payment requirements, signs locally within an explicit budget, and retries once. Use an optional unique designation for ranked play; otherwise purchases are anonymous. Submit one answer within the returned ttlSeconds. Never automatically repurchase after an uncertain payment outcome. Preserve the payment receipt for recovery. Other lounge rooms are documented in /api/menu. MCP 1.3 includes lounge_recover_purchase to persist and retry the original signed authorization. Purchase and answer retries are retained for at least seven days. Paid puzzle expiresAt is an absolute UTC deadline that starts after settlement."
   },
   "servers": [
     {
@@ -195,11 +195,11 @@
     },
     "/api/sample/constraint": {
       "get": {
-        "summary": "Free unscored standard puzzle — constraint",
+        "summary": "Free daily demo puzzle (same for every visitor) — constraint",
         "parameters": [],
         "responses": {
           "200": {
-            "description": "One generated puzzle; no answer until submission",
+            "description": "Today's demo puzzle for this family (shared, refreshed daily); no answer until submission",
             "content": {
               "application/json": {
                 "schema": {
@@ -285,11 +285,11 @@
     },
     "/api/sample/automaton": {
       "get": {
-        "summary": "Free unscored standard puzzle — automaton",
+        "summary": "Free daily demo puzzle (same for every visitor) — automaton",
         "parameters": [],
         "responses": {
           "200": {
-            "description": "One generated puzzle; no answer until submission",
+            "description": "Today's demo puzzle for this family (shared, refreshed daily); no answer until submission",
             "content": {
               "application/json": {
                 "schema": {
@@ -375,11 +375,11 @@
     },
     "/api/sample/walk": {
       "get": {
-        "summary": "Free unscored standard puzzle — walk",
+        "summary": "Free daily demo puzzle (same for every visitor) — walk",
         "parameters": [],
         "responses": {
           "200": {
-            "description": "One generated puzzle; no answer until submission",
+            "description": "Today's demo puzzle for this family (shared, refreshed daily); no answer until submission",
             "content": {
               "application/json": {
                 "schema": {
@@ -465,11 +465,11 @@
     },
     "/api/sample/logic": {
       "get": {
-        "summary": "Free unscored standard puzzle — logic",
+        "summary": "Free daily demo puzzle (same for every visitor) — logic",
         "parameters": [],
         "responses": {
           "200": {
-            "description": "One generated puzzle; no answer until submission",
+            "description": "Today's demo puzzle for this family (shared, refreshed daily); no answer until submission",
             "content": {
               "application/json": {
                 "schema": {
@@ -555,11 +555,11 @@
     },
     "/api/sample/sequence": {
       "get": {
-        "summary": "Free unscored standard puzzle — sequence",
+        "summary": "Free daily demo puzzle (same for every visitor) — sequence",
         "parameters": [],
         "responses": {
           "200": {
-            "description": "One generated puzzle; no answer until submission",
+            "description": "Today's demo puzzle for this family (shared, refreshed daily); no answer until submission",
             "content": {
               "application/json": {
                 "schema": {
@@ -645,11 +645,11 @@
     },
     "/api/sample/induction": {
       "get": {
-        "summary": "Free unscored standard puzzle — induction",
+        "summary": "Free daily demo puzzle (same for every visitor) — induction",
         "parameters": [],
         "responses": {
           "200": {
-            "description": "One generated puzzle; no answer until submission",
+            "description": "Today's demo puzzle for this family (shared, refreshed daily); no answer until submission",
             "content": {
               "application/json": {
                 "schema": {
@@ -735,11 +735,11 @@
     },
     "/api/sample/cipher": {
       "get": {
-        "summary": "Free unscored standard puzzle — cipher",
+        "summary": "Free daily demo puzzle (same for every visitor) — cipher",
         "parameters": [],
         "responses": {
           "200": {
-            "description": "One generated puzzle; no answer until submission",
+            "description": "Today's demo puzzle for this family (shared, refreshed daily); no answer until submission",
             "content": {
               "application/json": {
                 "schema": {
