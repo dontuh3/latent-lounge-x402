@@ -244,9 +244,13 @@ function paymentMiddleware(payTo, routes, facilitator, paywall, hooks = {}) {
       }
       return originalFlushHeaders();
     };
+    // Paid responses are never cacheable: a conditional request (e.g. If-None-Match: *)
+    // must not turn a settled purchase into an empty 304.
+    for (const name of ['if-none-match','if-modified-since','if-match','if-unmodified-since','if-range']) delete req.headers[name];
     next();
     await endPromise;
-    if (res.statusCode >= 400) {
+    // Settle only when the handler produced content; any other status is delivered unpaid.
+    if (res.statusCode < 200 || res.statusCode > 299 || res.statusCode === 204) {
       settled = true;
       res.writeHead = originalWriteHead;
       res.write = originalWrite;

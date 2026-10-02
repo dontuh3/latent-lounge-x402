@@ -21,7 +21,7 @@ import { fileURLToPath } from "url";
 import dotenv from "dotenv";
 import { GAME_GUIDE, GENERATOR_VERSION, puzzleMetadata, puzzleFeedback } from "./puzzle-insights.js";
 import { paymentMiddleware } from "./payment-middleware.js";
-import { readPayment, legacyNetwork, receiptHeaders } from './payment-protocol.js';
+import { readPayment, receiptHeaders } from './payment-protocol.js';
 import { DurableStore } from "./durable-store.js";
 import { verifyRecovery } from "./payment-recovery.js";
 import rateLimit from "express-rate-limit";
@@ -256,7 +256,7 @@ app.get('/healthz', (req, res) => res.json({ status: 'ok', kind: 'liveness', gen
 app.get('/readyz', (req,res) => {
   res.set('Cache-Control','no-store');
   try {
-    const recovering=Boolean(durable.pending().state);
+    const recovering=Boolean(durable.pending().state) && !settlementInFlight;
     for(const name of ['names.json','pending-puzzles.json','payment-receipts.json','answer-receipts.json','leaderboard.json','tournament.json','streaks.json','firsts.json','duelists.json','oracle.json']) durable.read(path.join(DATA_DIR,name),{});
     fs.accessSync(DATA_DIR,fs.constants.W_OK);
     res.status(recovering?503:200).json({status:recovering?'recovery_required':'ready',payments:'not_checked',generatorVersion:GENERATOR_VERSION});
@@ -336,12 +336,14 @@ function pageOf(req,items,defaultLimit=100) {
 }
 const own = (object, key) => Object.hasOwn(object, key) ? object[key] : undefined;
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
+// EIP-3009 settles each (from, nonce) at most once, so a payment is keyed on exactly that.
+// Keying on the raw header let an added or re-encoded field pass the same authorization
+// off as a new purchase.
 function paymentIdentity(req) {
   try {
-    const payload=readPayment(req);
-    const auth=payload.payload.authorization;
-    if(typeof payload.payload.signature !== 'string') return null;
-    return hash(JSON.stringify([legacyNetwork(payload.accepted?.network || payload.network),payload.accepted?.scheme || payload.scheme,payload.payload.signature.toLowerCase(),auth.from.toLowerCase(),auth.to.toLowerCase(),auth.nonce.toLowerCase(),String(auth.value),String(auth.validAfter),String(auth.validBefore)]));
+    const auth=readPayment(req).payload.authorization;
+    if(!/^0x[0-9a-fA-F]{40}$/.test(auth.from) || !/^0x[0-9a-fA-F]{64}$/.test(auth.nonce)) return null;
+    return hash(JSON.stringify(['eip3009',auth.from.toLowerCase(),auth.nonce.toLowerCase()]));
   } catch { return null; }
 }
 function requestFingerprint(req) { return hash(JSON.stringify([req.method,req.originalUrl,req.body || {}])); }
@@ -369,8 +371,11 @@ function replayPayment(req,res) {
   else { receiptHeaders(res,stored.receipt); res.status(stored.status).type('json').send(stored.body); }
   return true;
 }
+// True only between prepare and the settlement outcome. That record is in flight, not
+// stuck; the ledger lock is held throughout, so checks made under the lock never see it.
+let settlementInFlight = false;
 function recoveryBlocked(res) {
-  if(!durable.pending().state) return false;
+  if(!durable.pending().state || settlementInFlight) return false;
   res.status(503).json({error:'A payment requires recovery. Do not make another purchase. The operator has a durable recovery record.'});
   return true;
 }
@@ -414,11 +419,13 @@ const paymentHandler = paymentMiddleware(PAY_TO,routeConfig,facilitator,undefine
       ({entries}=durable.capture(() => { for(const action of res.locals.settlementActions || []) action(); }));
     } finally { pendingPuzzles.clear(); for(const [key,value] of snapshot) pendingPuzzles.set(key,value); stats=priorStats; }
     const body=Buffer.concat(calls.filter(([method])=>method==='write'||method==='end').map(([,args])=>Buffer.from(args[0] || ''))).toString();
+    JSON.parse(body); // commitPayment needs the delivered JSON; throwing here refuses to settle
     durable.prepare({kind:'payment',id,fingerprint:requestFingerprint(req),createdAt:new Date().toISOString(),requirements,payload,body,status:res.statusCode,entries});
+    settlementInFlight=true;
   },
-  confirmed(req,res,receipt) { return commitPayment(durable.pending(),receipt); },
-  rejected() { durable.abort(); },
-  uncertain() { /* Retain the prepared/confirmed record; never silently repurchase. */ }
+  confirmed(req,res,receipt) { settlementInFlight=false; return commitPayment(durable.pending(),receipt); },
+  rejected() { settlementInFlight=false; durable.abort(); },
+  uncertain() { settlementInFlight=false; /* Retain the prepared/confirmed record; never silently repurchase. */ }
 });
 // These handlers only read ledgers. They remain usable while settlement is pending.
 const safeRead = /^\/api\/(?:menu|leaderboard(?:\/[^/]+)?|profile\/[^/]+|firsts|oracle(?:\/archive)?|plaques|admin\/(?:stats|reports|export|payment-recovery))\/?$/i;
@@ -1140,6 +1147,9 @@ function tourneyStandings() {
 // Persisted to disk so paid, unanswered puzzles survive a redeploy/restart.
 const pendingPuzzles = new Map(); // puzzleId -> { answer, game, designation, expires }
 const PUZZLE_TTL_MS = 10 * 60 * 1000; // 10 minutes to answer
+// Free demos and paid puzzles have separate caps, so a flood of demos cannot block sales.
+const MAX_OPEN_PAID = 10000, MAX_OPEN_FREE = 2000;
+function openPuzzles(free) { let n = 0; for (const p of pendingPuzzles.values()) if (Boolean(p.free) === free) n++; return n; }
 const PENDING_FILE = path.join(DATA_DIR, "pending-puzzles.json");
 for (const [id, p] of Object.entries(readJsonStore(PENDING_FILE, {}))) {
   if (!p.free) pendingPuzzles.set(id, p);
@@ -1426,7 +1436,7 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
     // reaching here means the x402 middleware verified & settled payment
     const { name: designation, error: nameErr } = resolveDesignation(req, res, req.query.designation);
     if (nameErr) return res.status(403).json({ error: nameErr });
-    if(pendingPuzzles.size>=10000)return res.status(503).json({error:'The lounge has too many pending samples. Retry later.'});
+    if(openPuzzles(false)>=MAX_OPEN_PAID)return res.status(503).json({error:'The lounge has too many open puzzles. Retry later.'});
   const generated = gen();
     const { answer, norm, solution, ...pub } = generated;
     Object.assign(pub, puzzleMetadata(generated));
@@ -1486,6 +1496,7 @@ let sampleDemoDay = null;
 let sampleDemos = new Map();
 app.get("/api/sample/:game", (req, res) => {
   if (!Object.prototype.hasOwnProperty.call(GENERATORS, req.params.game)) return res.status(404).json({ error: `No free sample for "${req.params.game}". Try one of: ${Object.keys(GENERATORS).join(", ")}.` });
+  if (openPuzzles(true) >= MAX_OPEN_FREE) return res.status(503).json({ error: "Too many open demo puzzles right now. Retry in a few minutes." });
   const day = utcDay();
   if (sampleDemoDay !== day) { sampleDemoDay = day; sampleDemos = new Map(); }
   if (!sampleDemos.has(req.params.game)) sampleDemos.set(req.params.game, GENERATORS[req.params.game]());
