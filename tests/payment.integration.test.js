@@ -27,7 +27,8 @@ async function setup(t, fixtures = {}) {
       return res.end(JSON.stringify({ isValid: !state.verifyReject, payer: body.paymentPayload.payload.authorization.from }));
     }
     if (req.url === '/settle') {
-      state.settlements++;
+      state.settlements++; state.settleEntered=true;
+      if(state.settleWait) await state.settleWait;
       if (state.disconnect) { req.socket.destroy(); return; }
       if (state.settleOverride) return res.end(JSON.stringify(state.settleOverride));
       await new Promise(resolve => setTimeout(resolve, 150));
@@ -167,6 +168,34 @@ test('paid purchase and answer retries replay the original result without double
   const lb=JSON.parse(fs.readFileSync(path.join(s.dir,'leaderboard.json')));assert.equal(lb.sequence.replay.plays,1);
   assert.equal((await s.request('/api/check',null,{...body,guess:'different'})).status,410);
   const mismatch=await fetch(s.base+'/api/play/cipher',{headers:{'X-PAYMENT':purchased.payment}});assert.equal(mismatch.status,409);
+});
+
+test('a conditional paid request is never settled into an empty response',async t=>{
+  const s=await setup(t);
+  // Raw request: fetch adds Cache-Control: no-cache to conditional requests, which hides the bug.
+  const header=Buffer.from(JSON.stringify({x402Version:1,scheme:'exact',network:'base-sepolia',payload:{signature:'0x'+'1'.repeat(130),authorization:{from:a,to:receiver,value:'20000',validAfter:'0',validBefore:String(Math.floor(Date.now()/1000)+600),nonce:'0x'+randomBytes(32).toString('hex')}}})).toString('base64');
+  const raw=await new Promise((resolve,reject)=>{const req=http.request(s.base+'/api/play/sequence?designation=etag',{headers:{'X-PAYMENT':header,'If-None-Match':'*',Accept:'application/json'}},res=>{let body='';res.on('data',c=>body+=c);res.on('end',()=>resolve({status:res.statusCode,body}));});req.on('error',reject);req.end();});
+  assert.equal(raw.status,200);assert.ok(JSON.parse(raw.body).puzzleId);assert.equal(s.state.settlements,1);
+  assert.equal((await s.request('/api/play/cipher',b)).status,200);
+});
+
+test('a re-encoded payment header cannot buy a second puzzle',async t=>{
+  const s=await setup(t);const first=await s.request('/api/play/sequence?designation=rekey',a);
+  assert.equal(first.status,200);
+  const altered=JSON.parse(Buffer.from(first.payment,'base64'));altered.accepted={network:'re-keyed'};
+  const again=await fetch(s.base+'/api/play/sequence?designation=rekey',{headers:{Accept:'application/json','X-PAYMENT':Buffer.from(JSON.stringify(altered)).toString('base64')}});
+  assert.equal(again.status,200);assert.equal((await again.json()).puzzleId,first.body.puzzleId);assert.equal(s.state.settlements,1);
+});
+
+test('an in-flight settlement does not turn away quotes, readiness or other buyers',async t=>{
+  const s=await setup(t);let release;s.state.settleWait=new Promise(r=>{release=r;});
+  const buying=s.request('/api/play/sequence?designation=inflight',a);
+  const until=Date.now()+5000;while(!s.state.settleEntered && Date.now()<until)await new Promise(r=>setTimeout(r,10));
+  assert.equal((await s.request('/api/play/cipher')).status,402);
+  assert.equal((await fetch(s.base+'/readyz')).status,200);
+  const other=s.request('/api/play/cipher',b);
+  await new Promise(r=>setTimeout(r,100));release();
+  assert.equal((await buying).status,200);assert.equal((await other).status,200);assert.equal(s.state.settlements,2);
 });
 
 test('uncertain settlement leaves a recovery record and blocks further purchases',async t=>{
