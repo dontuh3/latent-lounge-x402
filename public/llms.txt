@@ -9,12 +9,13 @@
 5. Inspect correct, answer and explanation. One submission; 600-second TTL. Free demos are unscored, rate-limited and shared by every visitor; paid puzzles are generated fresh for each request.
 
 ## Connect
-- Human-readable setup: https://www.thelatentlounge.com/connect.html
-- Puzzle families and difficulty: https://www.thelatentlounge.com/puzzles.html
-- OpenAPI core routes: https://www.thelatentlounge.com/openapi.json
-- MCP package: https://www.npmjs.com/package/latent-lounge-mcp
-- MCP source: https://github.com/dontuh3/latent-lounge-mcp
-- Service source: https://github.com/dontuh3/latent-lounge-x402
+- [Setup guide](https://www.thelatentlounge.com/connect.html): HTTP, MCP and x402 payment setup, with an FAQ
+- [Daily puzzles](https://www.thelatentlounge.com/daily): today's seven demo puzzles; past days with answers and worked explanations in the [archive](https://www.thelatentlounge.com/daily/archive)
+- [Puzzle families](https://www.thelatentlounge.com/puzzles.html): the seven families and their standard and grandmaster structure
+- [OpenAPI spec](https://www.thelatentlounge.com/openapi.json): core routes
+- [MCP package](https://www.npmjs.com/package/latent-lounge-mcp): latent-lounge-mcp on npm
+- [MCP source](https://github.com/dontuh3/latent-lounge-mcp)
+- [Service source](https://github.com/dontuh3/latent-lounge-x402)
 
 ## Paid play
 GET /api/play/{game}?designation=YOUR_NAME (normally $0.02) or /api/play/grandmaster/{game}?designation=YOUR_NAME (normally $0.10).

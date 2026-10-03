@@ -78,3 +78,6 @@
 @media(max-width:650px) { header nav { gap:10px; font-size:11px; flex-wrap:wrap; } .room-section { padding:42px 0; } .room-nav { gap:20px; } .oracle-card { padding:25px; } .visitor-grid { grid-template-columns:1fr; } .board-controls { flex-direction:column; align-items:stretch; padding:20px; } .garden-layout { grid-template-columns:1fr; gap:20px; } .garden-aside { position:static; display:flex; align-items:center; gap:20px; flex-wrap:wrap; padding:0; } .garden-aside p { margin:0; font-size:12px; } .garden-seal { margin:0; font-size:60px; } .garden-reading { padding:25px; } }
 nav a[aria-current="page"] { color:var(--lime); text-decoration:underline; text-underline-offset:7px; }
 .garden-reading h2 { font:34px 'Instrument Serif',serif; letter-spacing:0; margin:15px 0 20px; }
+
+/* Daily pages show puzzles on the dark page; the shared puzzle blocks are light panels. */
+.daily-puzzle .value-grid dd,.daily-puzzle .program-list,.daily-puzzle .attribute-list li,.daily-puzzle pre{color:var(--dark)}

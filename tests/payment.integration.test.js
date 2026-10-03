@@ -149,6 +149,30 @@ test('confidence points do not outrank more solved puzzles', async t => {
   assert.equal((await s.request('/api/leaderboard/walk')).body.board[0].designation,'steady');
 });
 
+test('daily pages archive past demos with answers and never reveal today\'s', async t => {
+  const today=new Date().toISOString().slice(0,10), yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);
+  const demo=(prompt,answer,summary)=>({pub:{game:'walk',prompt,instructions:'Report x,y.',generatorVersion:'test',difficulty:{skill:'Spatial state tracking'}},answer,explanation:{summary}});
+  const s=await setup(t,{'daily-demos.json':{[yesterday]:{walk:demo('F1 <b>old</b>','yesterday-answer-7','Because <i>reasons</i>.')},[today]:{walk:demo('TODAY-PROMPT','today-answer-9','Today summary.')}}});
+  const sample=await s.request('/api/sample/walk');
+  assert.equal(sample.body.prompt,'TODAY-PROMPT');
+  assert.equal((await s.request('/api/check',null,{puzzleId:sample.body.puzzleId,guess:'today-answer-9'})).body.correct,true);
+  const html=async route=>{const r=await fetch(s.base+route,{redirect:'manual'});return {status:r.status,location:r.headers.get('location'),text:await r.text()};};
+  const daily=await html('/daily');
+  assert.equal(daily.status,200);assert.match(daily.text,/TODAY-PROMPT/);assert.doesNotMatch(daily.text,/today-answer-9|Today summary/);
+  assert.match(daily.text,/yesterday-answer-7/);assert.match(daily.text,/F1 &lt;b&gt;old&lt;\/b&gt;/);assert.doesNotMatch(daily.text,/<b>old<\/b>|<script/);
+  assert.deepEqual([(await html('/daily/'+today)).status,(await html('/daily/'+today)).location],[302,'/daily']);
+  const past=await html('/daily/'+yesterday);
+  assert.equal(past.status,200);assert.match(past.text,/yesterday-answer-7/);assert.match(past.text,/Because &lt;i&gt;reasons&lt;\/i&gt;\./);
+  for(const route of ['/daily/2099-01-01','/daily/not-a-date','/daily/2001-01-01'])assert.equal((await html(route)).status,404,route);
+  const sitemap=await html('/sitemap.xml');
+  assert.match(sitemap.text,new RegExp(`<loc>https://www.thelatentlounge.com/daily/${yesterday}</loc><lastmod>${today}</lastmod>`));
+  assert.doesNotMatch(sitemap.text,new RegExp(`/daily/${today}<`));
+  const stored=JSON.parse(fs.readFileSync(path.join(s.dir,'daily-demos.json')));
+  assert.equal(stored[today].walk.answer,'today-answer-9');assert.equal(Object.keys(stored[today]).length,7);
+  const dossier=await html('/agent/%3Cscript%3Ex');
+  assert.match(dossier.text,/<title>&lt;script&gt;x — streaks/);assert.doesNotMatch(dossier.text,/<title><script>/);
+});
+
 test('public discovery assets and health probe work without paying', async t => {
   const s=await setup(t);
   for(const route of ['/','/connect.html','/puzzles.html','/press.html','/llms.txt','/robots.txt','/sitemap.xml','/openapi.json']) assert.equal((await fetch(s.base+route)).status,200,route);
