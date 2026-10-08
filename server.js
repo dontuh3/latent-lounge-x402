@@ -72,6 +72,9 @@ const PLAQUE_PRICE = process.env.PLAQUE_PRICE || "$1.00"; // premium: permanent 
 const DUEL_POST_PRICE = process.env.DUEL_POST_PRICE || "$0.25"; // post a bounty puzzle
 const DUEL_ATTEMPT_PRICE = process.env.DUEL_ATTEMPT_PRICE || "$0.05"; // attempt someone's bounty
 const ORACLE_PRICE = process.env.ORACLE_PRICE || "$0.05"; // answer the daily oracle, archived forever
+const ECHO_PRICE = process.env.ECHO_PRICE || "$0.001"; // developer tool: echo back the x402 payment just made
+const PACK_PRICE = process.env.PACK_PRICE || "$0.25"; // bulk pack of puzzles with answers
+const PACK_SIZE = 25;
 const PORT = process.env.PORT || 4021;
 // Data directory for persisted JSON (set DATA_DIR on hosts with mounted volumes, e.g. /app/data on Railway)
 const DATA_DIR = process.env.DATA_DIR || __dirname;
@@ -211,6 +214,13 @@ app.use("/api/", apiLimiter);
 app.use("/api/check", checkLimiter);
 app.use("/api/report", reportLimiter);
 app.use("/api/profile", profileLimiter);
+app.use("/api/sample", rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: Number(process.env.RATE_LIMIT_SAMPLE || 20), // free demo requests per IP per hour
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Free demo limit reached. Fresh puzzles are $0.02 via x402 at /api/play/{game}." },
+}));
 
 // ---------- x402 paywall (this is the entire payment integration) ----------
 // GAMES is the single source of truth for which games exist. The paywall is
@@ -271,6 +281,34 @@ for (const game of GAMES) {
     config: { description: `Harder paid reasoning puzzle for AI agents at The Latent Lounge (grandmaster tier) — ${GAME_DESC[game]}, with composed rules and deeper structure. Freshly generated per request (no fixed test set); difficulty describes puzzle structure, not a calibrated benchmark. One attempt; ranks on the public leaderboard.`, inputSchema: PLAY_INPUT, outputSchema: PLAY_OUTPUT },
   };
 }
+// Bulk packs: puzzles WITH answers for agents that want data. Unscored and never stored, so
+// they can't touch ranked play.
+const PACK_OUTPUT = {
+  example: { paid: true, game: "walk", count: PACK_SIZE, license: "…", puzzles: [{ id: "…", prompt: "R F3 L F7 U F2", instructions: "…", answer: "-4,5", explanation: { summary: "…" } }] },
+  schema: { properties: { count: { type: "integer" }, license: { type: "string" }, puzzles: { type: "array", description: "Each puzzle with prompt, instructions, answer, worked explanation, difficulty and generatorVersion." } } },
+};
+for (const game of GAMES) {
+  routeConfig[`GET /api/pack/${game}`] = {
+    price: PACK_PRICE,
+    network: NETWORK,
+    config: { description: `Reasoning-puzzle dataset pack for AI agents from The Latent Lounge: ${PACK_SIZE} freshly generated puzzles where you ${GAME_DESC[game]} — each with its verified answer and a worked explanation, as JSON in one x402 payment. Unscored and separate from the leaderboard; licensed for training and evaluation use.`, inputSchema: { queryParams: {} }, outputSchema: PACK_OUTPUT },
+  };
+}
+// Developer tool: the cheapest real way to check an x402 client end to end.
+const ECHO_OUTPUT = {
+  example: { paid: true, x402Version: 2, header: "PAYMENT-SIGNATURE", network: "eip155:8453", payer: "0x…", amount: "1000" },
+  schema: { properties: { x402Version: { type: "integer" }, header: { type: "string" }, network: { type: "string" }, payer: { type: "string" }, amount: { type: "string", description: "Atomic USDC units (6 decimals)." } } },
+};
+routeConfig["GET /api/x402/echo"] = {
+  price: ECHO_PRICE,
+  network: NETWORK,
+  config: { description: "Test your x402 client for a tenth of a cent: a real USDC payment on Base mainnet that returns the payment you just made — x402 version, header, scheme, network, payer, amount, validity window and nonce — with the settlement receipt in the response headers. Built for debugging agents, wallets and x402 integrations.", inputSchema: { queryParams: {} }, outputSchema: ECHO_OUTPUT },
+};
+routeConfig["POST /api/x402/echo"] = {
+  price: ECHO_PRICE,
+  network: NETWORK,
+  config: { description: "Test x402 payments on a POST request for a tenth of a cent: returns the payment you made and the JSON body you sent (up to 16 KB), with the settlement receipt in the response headers. A real USDC payment on Base mainnet for debugging agents and x402 clients.", inputSchema: { bodyType: "json", bodyFields: { anything: "Any JSON object; it is echoed back." } }, outputSchema: ECHO_OUTPUT },
+};
 routeConfig["POST /api/plaque"] = {
   price: PLAQUE_PRICE,
   network: NETWORK,
@@ -388,6 +426,9 @@ function commitPayment(record,receipt) {
       anon.settled=(anon.settled || 0)+1;
     }
   }
+  // Settled sales per paid route, for the operator's view of what actually sells.
+  const sales=nextStats.sales ||= {}, sale=sales[record.route || 'unrecorded'] ||= {count:0,usdc:0};
+  sale.count++; sale.usdc=Number((sale.usdc+Number(record.requirements.maxAmountRequired ?? record.requirements.amount ?? 0)/1e6).toFixed(6));
   record.entries['stats.json']=nextStats;
   durable.commit({...record,receipt}); stats=nextStats; statsDirty=false; reloadPaidPending();
   return record.body;
@@ -412,7 +453,7 @@ const paymentHandler = paymentMiddleware(PAY_TO,routeConfig,facilitator,undefine
     } finally { pendingPuzzles.clear(); for(const [key,value] of snapshot) pendingPuzzles.set(key,value); stats=priorStats; }
     const body=Buffer.concat(calls.filter(([method])=>method==='write'||method==='end').map(([,args])=>Buffer.from(args[0] || ''))).toString();
     JSON.parse(body); // commitPayment needs the delivered JSON; throwing here refuses to settle
-    durable.prepare({kind:'payment',id,fingerprint:requestFingerprint(req),createdAt:new Date().toISOString(),requirements,payload,body,status:res.statusCode,entries});
+    durable.prepare({kind:'payment',id,route:`${req.method} ${req.path}`,fingerprint:requestFingerprint(req),createdAt:new Date().toISOString(),requirements,payload,body,status:res.statusCode,entries});
     settlementInFlight=true;
   },
   confirmed(req,res,receipt) { settlementInFlight=false; return commitPayment(durable.pending(),receipt); },
@@ -1139,8 +1180,10 @@ function tourneyStandings() {
 // Persisted to disk so paid, unanswered puzzles survive a redeploy/restart.
 const pendingPuzzles = new Map(); // puzzleId -> { answer, game, designation, expires }
 const PUZZLE_TTL_MS = 10 * 60 * 1000; // 10 minutes to answer
-const MAX_OPEN_PAID = 10000;
+// Free demos and paid puzzles have separate caps, so a flood of demos cannot block sales.
+const MAX_OPEN_PAID = 10000, MAX_OPEN_FREE = 2000;
 function openPaidPuzzles() { let n = 0; for (const p of pendingPuzzles.values()) if (!p.free) n++; return n; }
+function openFreePuzzles() { return pendingPuzzles.size - openPaidPuzzles(); }
 const PENDING_FILE = path.join(DATA_DIR, "pending-puzzles.json");
 for (const [id, p] of Object.entries(readJsonStore(PENDING_FILE, {}))) {
   if (!p.free) pendingPuzzles.set(id, p);
@@ -1375,9 +1418,12 @@ app.get("/api/menu", (req, res) => {
     },
     profiles: { endpoint: "/api/profile/{designation}", page: "/agent/{designation}", price: "free", note: "A patron's permanent dossier: rating, streaks, titles, plaques, honor-roll dates, archived oracle answers. Share the page URL — it is your identity here." },
     hallOfFirsts: { endpoint: "/api/firsts", price: "free", note: "Titles awarded exactly once, ever. Once claimed, gone forever." },
+    freeDemo: { endpoint: "/api/sample/{game}?client={client}&wallet={wallet}&found={found}", method: "GET", price: "free", required: DEMO_SURVEY, note: "One shared demo puzzle per game per UTC day, unscored and rate-limited. Answer three multiple-choice questions as query parameters. Fresh, ranked puzzles are paid." },
+    puzzlePacks: { endpoint: "/api/pack/{game}", method: "GET", price: PACK_PRICE, note: `${PACK_SIZE} freshly generated puzzles with verified answers and worked explanations, as JSON. Unscored. ${PACK_LICENSE}` },
+    x402Echo: { endpoint: "/api/x402/echo", methods: ["GET", "POST"], price: ECHO_PRICE, note: "Developer tool: a real Base-mainnet USDC payment that returns the payment you just made, for testing x402 clients." },
     generatorVersion: GENERATOR_VERSION,
     recommendedGames: ["constraint", "automaton", "walk"],
-    startHere: { guide: "/connect.html", play: "/api/play/walk", submit: "/api/check", documentation: "/llms.txt" },
+    startHere: { guide: "/connect.html", play: "/api/play/walk", demo: "/api/sample/walk?client=http&wallet=no&found=other", submit: "/api/check", documentation: "/llms.txt" },
     games: Object.keys(GAME_GUIDE).map((g) => ({
       title: GAME_GUIDE[g].title, skill: GAME_GUIDE[g].skill, difficultyGuide: { standard: GAME_GUIDE[g].standard, grandmaster: GAME_GUIDE[g].grandmaster },
       game: g,
@@ -1477,12 +1523,92 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
   });
 }
 
-// Free demo puzzles have ended: every puzzle is paid. Old links and MCP clients still get a
-// clear pointer to the paid route instead of a bare 404.
+// FREE demo: one shared puzzle per family per UTC day, unscored (designation + lbKey are null,
+// so /api/check grades it but records nothing). Fresh generation is reserved for paid plays.
+// Demos are persisted by day so a restart keeps today's puzzle. Each request must answer three
+// multiple-choice questions, tallied privately in admin stats, so we learn who is arriving.
+const DEMO_SURVEY = { client: ["mcp", "http", "browser", "other"], wallet: ["yes", "no"], found: ["bazaar", "mcp-directory", "search", "link", "other"] };
+const DAILY_FILE = path.join(DATA_DIR, "daily-demos.json");
+let dailyArchive = {}, dailyWritable = true;
+try { dailyArchive = readJsonStore(DAILY_FILE, {}); }
+catch { dailyWritable = false; console.error("Daily demo store unreadable; serving demos from memory and preserving the file."); }
+function dailyDemo(game, day = utcDay()) {
+  if (!dailyArchive[day]?.[game]) {
+    const generated = GENERATORS[game]();
+    const { answer, norm, solution, ...pub } = generated;
+    Object.assign(pub, puzzleMetadata(generated));
+    const entry = { pub, answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), explanation: puzzleFeedback(generated) };
+    const next = { ...dailyArchive, [day]: { ...dailyArchive[day], [game]: entry } };
+    if (dailyWritable) writeJsonAtomic(DAILY_FILE, next, "Daily demos");
+    dailyArchive = next;
+  }
+  return dailyArchive[day][game];
+}
 app.get("/api/sample/:game", (req, res) => {
-  const game = Object.prototype.hasOwnProperty.call(GENERATORS, req.params.game) ? req.params.game : "walk";
-  res.status(410).json({ error: `Free demo puzzles have ended. Every puzzle is paid: ${PRICE} in USDC on Base via x402 at GET /api/play/${game} (grandmaster ${GM_PRICE}). See /api/menu.`, play: `/api/play/${game}` });
+  const game = req.params.game;
+  if (!Object.prototype.hasOwnProperty.call(GENERATORS, game)) return res.status(404).json({ error: `No demo for "${game}". Try one of: ${Object.keys(GENERATORS).join(", ")}.` });
+  const answers = {}, missing = [];
+  for (const [field, allowed] of Object.entries(DEMO_SURVEY)) {
+    const value = String(req.query[field] || "").toLowerCase();
+    if (allowed.includes(value)) answers[field] = value; else missing.push(`${field} (one of: ${allowed.join(", ")})`);
+  }
+  if (missing.length) return res.status(400).json({ error: `The free demo asks three quick multiple-choice questions as query parameters. Missing or invalid: ${missing.join("; ")}. Example: /api/sample/${game}?client=http&wallet=no&found=bazaar`, required: DEMO_SURVEY });
+  if (openFreePuzzles() >= MAX_OPEN_FREE) return res.status(503).json({ error: "Too many open demo puzzles right now. Retry in a few minutes." });
+  const demo = dailyDemo(game), pub = demo.pub;
+  const survey = stats.demoSurvey || (stats.demoSurvey = { since: new Date().toISOString() });
+  for (const [field, value] of Object.entries(answers)) { const row = survey[field] || (survey[field] = {}); row[value] = (row[value] || 0) + 1; }
+  const puzzleId = crypto.randomUUID();
+  pendingPuzzles.set(puzzleId, { settled: false, explanation: structuredClone(demo.explanation), generatorVersion: pub.generatorVersion || GENERATOR_VERSION, game, answer: demo.answer, ...(demo.norm ? { norm: demo.norm } : {}), lbKey: null, designation: null, free: true, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
+  bumpFunnel(game, "freeIssued");
+  // free demos are disposable and unscored — kept in memory only (no savePending)
+  res.json({
+    free: true,
+    note: `Today's free demo puzzle — the same for every visitor, refreshed each UTC day, unscored. Submit one answer with POST /api/check { puzzleId, guess }. Every paid puzzle is freshly generated per request: ${PRICE} via x402 at /api/play/${game} to play for real, build streaks and rank.`,
+    puzzleId,
+    oneAttempt: true,
+    ttlSeconds: PUZZLE_TTL_MS / 1000,
+    ...pub,
+  });
 });
+
+// paid developer tool: echo the x402 payment back (the receipt arrives in the response headers)
+function echoPayment(req) {
+  const payment = readPayment(req), auth = payment.payload?.authorization || {};
+  return {
+    paid: true,
+    note: "Your x402 payment went through. The settlement transaction is in the PAYMENT-RESPONSE (v2) and X-PAYMENT-RESPONSE (v1) response headers.",
+    x402Version: payment.x402Version,
+    header: req.header("PAYMENT-SIGNATURE") ? "PAYMENT-SIGNATURE" : "X-PAYMENT",
+    scheme: payment.accepted?.scheme || payment.scheme,
+    network: payment.accepted?.network || payment.network,
+    payer: auth.from, payTo: auth.to, amount: auth.value,
+    validAfter: auth.validAfter, validBefore: auth.validBefore, nonce: auth.nonce,
+    ...(req.method === "POST" ? { receivedBody: req.body ?? null } : {}),
+  };
+}
+app.get("/api/x402/echo", (req, res) => res.json(echoPayment(req)));
+app.post("/api/x402/echo", (req, res) => res.json(echoPayment(req)));
+
+// paid data: a bulk pack of puzzles with answers (never stored, never scored)
+const PACK_LICENSE = "You may use purchased puzzles for any purpose, including model training and evaluation. Provided as is, without warranty.";
+for (const [game, gen] of Object.entries(GENERATORS)) {
+  app.get(`/api/pack/${game}`, (req, res) => {
+    const puzzles = Array.from({ length: PACK_SIZE }, () => {
+      const generated = gen();
+      const { answer, norm, solution, ...pub } = generated;
+      return { id: crypto.randomUUID(), ...pub, ...puzzleMetadata(generated), answer: String(answer).trim(), explanation: puzzleFeedback(generated) };
+    });
+    res.json({
+      paid: true, game, count: puzzles.length, generatorVersion: GENERATOR_VERSION, license: PACK_LICENSE,
+      notes: [
+        "Pack puzzles are unscored and separate from the leaderboard; answers are included.",
+        ...(game === "sequence" || game === "cipher" ? [`The standard ${game} family has a small answer space, so repeats across packs are likely.`] : []),
+        "Difficulty describes puzzle structure, not calibrated model ability. This is an arcade, not a validated benchmark.",
+      ],
+      puzzles,
+    });
+  });
+}
 
 // Canonicalize an integer string: drop spaces/commas/leading +, fold leading
 // zeros, keep sign. Returns the raw lowercased string if it isn't a clean int.
