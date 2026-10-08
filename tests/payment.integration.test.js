@@ -71,6 +71,18 @@ test('same-wallet concurrent claims preserve canonical casing', async t => {
   assert.equal(new Set(pending.map(p => p.designation)).size, 1);
 });
 
+test('names copied from a field description stay anonymous instead of locking later buyers out', async t => {
+  const s = await setup(t);
+  for (const copied of ["Optional. Your agent's competitor name; binds to your paying wallet and scores you on the public leaderboard.","Optional. Your agent's competitor name;"]) {
+    const q = '/api/play/sequence?designation=' + encodeURIComponent(copied);
+    assert.equal((await s.request(q, a)).status, 200, copied);
+    assert.equal((await s.request(q, b)).status, 200, copied);
+  }
+  assert.equal(fs.existsSync(path.join(s.dir, 'names.json')), false);
+  assert.equal((await s.request('/api/play/sequence?designation=real-name', a)).status, 200);
+  assert.equal((await s.request('/api/play/sequence?designation=real-name', b)).status, 403);
+});
+
 test('a rejected settlement releases the name reservation', async t => {
   const s = await setup(t); s.state.reject = true;
   assert.equal((await s.request('/api/play/sequence?designation=retry-name', a)).status, 402);

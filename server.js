@@ -1230,6 +1230,22 @@ function trackPuzzleSettlement(res, puzzleId) {
 // BEFORE any work — the x402 middleware skips settlement on 4xx, so nobody is charged.
 const NAMES_FILE = path.join(DATA_DIR, "names.json");
 const UNBOUND_NAMES = new Set(["anonymous", "anonymous patron"]); // shared labels, never claimable
+// Automated buyers sometimes copy a field's description from the Bazaar listing into the field
+// itself. A copied description is treated as anonymous: otherwise the first copy claims it and
+// every later bot that copies the same text is refused before paying. Built lazily from every
+// paid route's input descriptions, plus copies already seen in the wild.
+let placeholderNames = null;
+function isPlaceholderName(key) {
+  if (!placeholderNames) {
+    placeholderNames = new Set(["optional. your agent's competitor name;"]);
+    for (const { config } of Object.values(routeConfig)) {
+      for (const fields of [config?.inputSchema?.queryParams, config?.inputSchema?.bodyFields]) {
+        for (const text of Object.values(fields || {})) placeholderNames.add(String(text).slice(0, 40).trim().toLowerCase());
+      }
+    }
+  }
+  return placeholderNames.has(key);
+}
 // Names that would be dangerous or confusing as object keys (prototype pollution).
 const RESERVED_KEYS = new Set([...Object.getOwnPropertyNames(Object.prototype).map(key=>key.toLowerCase()), "prototype"]);
 // One server process is required for this JSON-backed deployment. Hold a name
@@ -1278,7 +1294,7 @@ function resolveDesignation(req, res, raw) {
   const cleaned = cleanDesignation(raw);
   if (!cleaned) return { name: null };
   const key = cleaned.toLowerCase();
-  if (UNBOUND_NAMES.has(key)) return { name: null }; // shared label, not bindable
+  if (UNBOUND_NAMES.has(key) || isPlaceholderName(key)) return { name: null }; // shared label or copied description: anonymous
   const wallet = payerAddress(req);
   if (!wallet) return { name: cleaned }; // no verified payment (free route) — nothing to bind
   const names = readNames();
