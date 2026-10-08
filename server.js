@@ -214,6 +214,15 @@ app.use("/api/", apiLimiter);
 app.use("/api/check", checkLimiter);
 app.use("/api/report", reportLimiter);
 app.use("/api/profile", profileLimiter);
+// New paid echo requests per IP. Unpaid quotes and retries of an existing purchase are not counted.
+app.use("/api/x402/echo", rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: () => ECHO_IP_HOURLY,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: req => !(req.header("PAYMENT-SIGNATURE") || req.header("X-PAYMENT")) || Boolean(own(receiptView(PAYMENT_RECEIPTS), paymentIdentity(req) || "")),
+  message: { error: "Echo limit for this address reached. Retry later; you have not been charged." },
+}));
 app.use("/api/sample", rateLimit({
   windowMs: 60 * 60 * 1000,
   limit: Number(process.env.RATE_LIMIT_SAMPLE || 20), // free demo requests per IP per hour
@@ -261,7 +270,7 @@ app.get('/readyz', (req,res) => {
     const recovering=Boolean(durable.pending().state) && !settlementInFlight;
     for(const name of ['names.json','pending-puzzles.json','payment-receipts.json','answer-receipts.json','leaderboard.json','tournament.json','streaks.json','firsts.json','duelists.json','oracle.json']) durable.read(path.join(DATA_DIR,name),{});
     fs.accessSync(DATA_DIR,fs.constants.W_OK);
-    res.status(recovering?503:200).json({status:recovering?'recovery_required':'ready',payments:'not_checked',generatorVersion:GENERATOR_VERSION});
+    res.status(recovering?503:200).json({status:recovering?'recovery_required':'ready',payments:'not_checked',generatorVersion:GENERATOR_VERSION,release:(process.env.RAILWAY_GIT_COMMIT_SHA || '').slice(0,12) || null});
   } catch {res.status(503).json({status:'storage_unavailable',payments:'not_checked'});}
 });
 app.use(['/api/sample', '/api/play', '/api/check', '/api/admin'], (req, res, next) => {
@@ -302,12 +311,12 @@ const ECHO_OUTPUT = {
 routeConfig["GET /api/x402/echo"] = {
   price: ECHO_PRICE,
   network: NETWORK,
-  config: { description: "Test your x402 client for a tenth of a cent: a real USDC payment on Base mainnet that returns the payment you just made — x402 version, header, scheme, network, payer, amount, validity window and nonce — with the settlement receipt in the response headers. Built for debugging agents, wallets and x402 integrations.", inputSchema: { queryParams: {} }, outputSchema: ECHO_OUTPUT },
+  config: { description: "Test your x402 client for a tenth of a cent: a real, non-refundable USDC payment on Base mainnet that returns the details of the payment you just made — x402 version, header, scheme, network, payer, amount, validity window and nonce — with the settlement receipt in the response headers. Built for debugging agents, wallets and x402 integrations.", inputSchema: { queryParams: {} }, outputSchema: ECHO_OUTPUT },
 };
 routeConfig["POST /api/x402/echo"] = {
   price: ECHO_PRICE,
   network: NETWORK,
-  config: { description: "Test x402 payments on a POST request for a tenth of a cent: returns the payment you made and the JSON body you sent (up to 16 KB), with the settlement receipt in the response headers. A real USDC payment on Base mainnet for debugging agents and x402 clients.", inputSchema: { bodyType: "json", bodyFields: { anything: "Any JSON object; it is echoed back." } }, outputSchema: ECHO_OUTPUT },
+  config: { description: "Test x402 payments on a POST request for a tenth of a cent: returns the details of the payment you made and the JSON body you sent (bodies over 1 KB are summarised by size and SHA-256; never send secrets), with the settlement receipt in the response headers. A real, non-refundable USDC payment on Base mainnet.", inputSchema: { bodyType: "json", bodyFields: { anything: "Any JSON object; it is echoed back." } }, outputSchema: ECHO_OUTPUT },
 };
 routeConfig["POST /api/plaque"] = {
   price: PLAQUE_PRICE,
@@ -351,14 +360,44 @@ let apiBusy = false, apiTail = Promise.resolve(), apiWaiting = 0;
 const PAYMENT_RECEIPTS = path.join(DATA_DIR,'payment-receipts.json');
 const ANSWER_RECEIPTS = path.join(DATA_DIR,'answer-receipts.json');
 const RECEIPT_RETENTION_MS=7*86400000, MAX_RECEIPTS=100000;
+// Stored response bodies are bounded per record and in total. Past either bound the receipt keeps
+// its proof (status, settlement receipt, size and hash) but not the body, so storage stops growing
+// without ever blocking a sale; a later retry of that purchase is told the body was not retained.
+const RECEIPT_BODY_MAX_BYTES=Number(process.env.RECEIPT_BODY_MAX_BYTES || 256*1024);
+const RECEIPT_BODY_BUDGET_BYTES=Number(process.env.RECEIPT_BODY_BUDGET_BYTES || 32*1024*1024);
+function isRetained(file,r,now=Date.now()) {
+  // Old purchase receipts lack an authorization expiry: preserve those conservatively.
+  return !(Date.parse(r.at)<now-RECEIPT_RETENTION_MS && (file===ANSWER_RECEIPTS || (Number.isFinite(r.validBefore) && r.validBefore*1000<now)));
+}
 function retainedReceipts(file) {
-  const records=readJsonStore(file,{}),cutoff=Date.now()-RECEIPT_RETENTION_MS;
-  for(const [id,r] of Object.entries(records)) {
-    // Old purchase receipts lack an authorization expiry: preserve those conservatively.
-    if(Date.parse(r.at)<cutoff && (file===ANSWER_RECEIPTS || (Number.isFinite(r.validBefore) && r.validBefore*1000<Date.now())))delete records[id];
-  }
+  const records=readJsonStore(file,{}),now=Date.now();
+  for(const [id,r] of Object.entries(records)) if(!isRetained(file,r,now)) delete records[id];
   return records;
 }
+// Read-only view of a receipt store, parsed again only when the file changes on disk. Header
+// lookups and capacity checks use it, so no request re-reads a large store just to check a header.
+// Callers must not mutate the returned object; writers use retainedReceipts.
+const receiptCache=new Map();
+function receiptView(file) {
+  if(durable.staged?.has(path.basename(file))) return readJsonStore(file,{});
+  let stat;
+  try { stat=fs.statSync(file); } catch(error) { if(error.code==='ENOENT') return {}; throw error; }
+  const cached=receiptCache.get(file);
+  if(cached && cached.mtimeMs===stat.mtimeMs && cached.size===stat.size && cached.ino===stat.ino) return cached.records;
+  const records=readJsonStore(file,{});
+  receiptCache.set(file,{mtimeMs:stat.mtimeMs,size:stat.size,ino:stat.ino,records});
+  return records;
+}
+// Echo guardrails (pilot values, in memory, reset on restart): a daily cap per paying wallet,
+// counted only for settled echoes, and an hourly cap per IP on new paid echo requests.
+const ECHO_WALLET_DAILY=Number(process.env.ECHO_WALLET_DAILY || 50), ECHO_IP_HOURLY=Number(process.env.ECHO_IP_HOURLY || 60);
+let echoSales={day:null,byWallet:new Map()};
+function echoSalesToday(wallet) { return echoSales.day===utcDay() ? echoSales.byWallet.get(wallet) || 0 : 0; }
+function countEchoSale(wallet) {
+  if(echoSales.day!==utcDay()) echoSales={day:utcDay(),byWallet:new Map()};
+  const key=String(wallet).toLowerCase(); echoSales.byWallet.set(key,(echoSales.byWallet.get(key) || 0)+1);
+}
+function retainedCount(file) { let n=0; const now=Date.now(); for(const r of Object.values(receiptView(file))) if(isRetained(file,r,now)) n++; return n; }
 function pageOf(req,items,defaultLimit=100) {
   const number=(value,fallback,max)=>{const n=Number(value);return Number.isSafeInteger(n)&&n>=0?Math.min(n,max):fallback;};
   const offset=number(req.query.offset,0,1000000),limit=Math.max(1,number(req.query.limit,defaultLimit,100));
@@ -377,6 +416,25 @@ function paymentIdentity(req) {
   } catch { return null; }
 }
 function requestFingerprint(req) { return hash(JSON.stringify([req.method,req.originalUrl,req.body || {}])); }
+// The complete signed authorization, normalized. A retry must present exactly this; matching only
+// the payer and nonce (both public once settled) let anyone fetch someone else's paid response.
+function paymentDigest(req) {
+  try {
+    const payment=readPayment(req), auth=payment.payload.authorization, sig=payment.payload.signature;
+    if(typeof sig!=='string' || !/^0x[0-9a-fA-F]{2,}$/.test(sig)) return null;
+    const int=value=>BigInt(String(value)).toString();
+    return hash(JSON.stringify(['eip3009',sig.toLowerCase(),String(auth.from).toLowerCase(),String(auth.to).toLowerCase(),int(auth.value),int(auth.validAfter),int(auth.validBefore),String(auth.nonce).toLowerCase()]));
+  } catch { return null; }
+}
+// The signed authorization is also published on-chain at settlement, so it is not a secret either.
+// A client may send a private retrieval key with its purchase; retries carrying the same key are
+// honoured for the whole retention period. Without one, retries are honoured until shortly after
+// the authorization expires, which covers a lost response but not a later scrape of the chain.
+const REPLAY_GRACE_MS=Number(process.env.REPLAY_GRACE_MS || 3600000);
+function retrievalKeyHash(req) {
+  const key=req.header('X-Lounge-Retrieval-Key');
+  return typeof key==='string' && /^[A-Za-z0-9_-]{16,128}$/.test(key) ? hash('retrieval-key:'+key) : null;
+}
 function reloadPaidPending() {
   for (const [id,p] of pendingPuzzles) if(!p.free) pendingPuzzles.delete(id);
   for (const [id,p] of Object.entries(readJsonStore(PENDING_FILE,{}))) if(!p.free) pendingPuzzles.set(id,p);
@@ -395,10 +453,21 @@ function recoverCommitted() {
   if(confirmed) {stats=readJsonStore(STATS_FILE,stats);statsDirty=false;}
 }
 function replayPayment(req,res) {
-  const id=paymentIdentity(req), stored=id && own(readJsonStore(PAYMENT_RECEIPTS,{}),id);
+  const id=paymentIdentity(req), stored=id && own(receiptView(PAYMENT_RECEIPTS),id);
   if(!stored) return false;
-  if(stored.fingerprint!==requestFingerprint(req)) res.status(409).json({error:'This payment was used for a different request.'});
-  else { receiptHeaders(res,stored.receipt); res.status(stored.status).type('json').send(stored.body); }
+  if(!stored.paymentDigest || stored.paymentDigest!==paymentDigest(req)) {
+    res.status(409).json({error:'This payment authorization was already used. You have not been charged again.'});
+  } else if(stored.retrievalKeyHash && stored.retrievalKeyHash!==retrievalKeyHash(req)) {
+    res.status(409).json({error:'Retrying this purchase requires the X-Lounge-Retrieval-Key sent with the original request. You have not been charged again.'});
+  } else if(!stored.retrievalKeyHash && Date.now()>stored.validBefore*1000+REPLAY_GRACE_MS) {
+    receiptHeaders(res,stored.receipt);
+    res.status(410).json({error:'The retry window for this payment has closed. Its settlement receipt is attached; keep it and contact the operator if the original response was lost.'});
+  } else if(stored.fingerprint!==requestFingerprint(req)) {
+    res.status(409).json({error:'This payment was used for a different request.'});
+  } else if(stored.bodyOmitted) {
+    receiptHeaders(res,stored.receipt);
+    res.status(410).json({error:'This purchase settled, but its response was not retained (storage budget). Its settlement receipt is attached; contact the operator if the original response was lost.',bodyBytes:stored.bodyBytes,bodySha256:stored.bodySha256});
+  } else { receiptHeaders(res,stored.receipt); res.status(stored.status).type('json').send(stored.body); }
   return true;
 }
 // True only between prepare and the settlement outcome. That record is in flight, not
@@ -414,7 +483,11 @@ function commitPayment(record,receipt) {
   if(puzzle) { puzzle.issuedAt=Date.now(); puzzle.expires=puzzle.issuedAt+PUZZLE_TTL_MS; body.expiresAt=new Date(puzzle.expires).toISOString(); body.ttlSeconds=PUZZLE_TTL_MS/1000; }
   record.body=JSON.stringify(body);
   const receipts=retainedReceipts(PAYMENT_RECEIPTS);
-  receipts[record.id]={fingerprint:record.fingerprint,body:record.body,status:record.status,receipt,at:new Date().toISOString(),validBefore:Number(record.payload.payload.authorization.validBefore)};
+  let storedBytes=0; for(const r of Object.values(receipts)) if(typeof r.body==='string') storedBytes+=Buffer.byteLength(r.body);
+  const bodyBytes=Buffer.byteLength(record.body), keepBody=bodyBytes<=RECEIPT_BODY_MAX_BYTES && storedBytes+bodyBytes<=RECEIPT_BODY_BUDGET_BYTES;
+  receipts[record.id]={fingerprint:record.fingerprint,paymentDigest:record.paymentDigest,...(record.retrievalKeyHash?{retrievalKeyHash:record.retrievalKeyHash}:{}),
+    ...(keepBody?{body:record.body}:{bodyOmitted:true,bodyBytes,bodySha256:hash(record.body)}),
+    status:record.status,receipt,at:new Date().toISOString(),validBefore:Number(record.payload.payload.authorization.validBefore)};
   record.entries['payment-receipts.json']=receipts;
   const nextStats=structuredClone(stats);
   if(puzzle) {
@@ -431,14 +504,19 @@ function commitPayment(record,receipt) {
   sale.count++; sale.usdc=Number((sale.usdc+Number(record.requirements.maxAmountRequired ?? record.requirements.amount ?? 0)/1e6).toFixed(6));
   record.entries['stats.json']=nextStats;
   durable.commit({...record,receipt}); stats=nextStats; statsDirty=false; reloadPaidPending();
+  if(record.route?.endsWith(' /api/x402/echo')) countEchoSale(record.payload.payload.authorization.from);
   return record.body;
 }
 const paymentHandler = paymentMiddleware(PAY_TO,routeConfig,facilitator,undefined,{
   async beforeHandler(req,res) {
     await acquireLedger(res);
     if(replayPayment(req,res) || recoveryBlocked(res))return false;
-    if(Object.keys(retainedReceipts(PAYMENT_RECEIPTS)).length>=MAX_RECEIPTS || Object.keys(retainedReceipts(ANSWER_RECEIPTS)).length>=MAX_RECEIPTS) {
+    if(retainedCount(PAYMENT_RECEIPTS)>=MAX_RECEIPTS || retainedCount(ANSWER_RECEIPTS)>=MAX_RECEIPTS) {
       res.status(503).json({error:'The recovery ledger is at capacity. No new payment was submitted.'});return false;
+    }
+    // The payer here is authenticated: the facilitator has verified the signature.
+    if(req.path==='/api/x402/echo' && echoSalesToday(payerAddress(req))>=ECHO_WALLET_DAILY) {
+      res.status(429).json({error:`This wallet has reached today's limit of ${ECHO_WALLET_DAILY} echo tests. You have not been charged.`});return false;
     }
     return true;
   },
@@ -453,7 +531,7 @@ const paymentHandler = paymentMiddleware(PAY_TO,routeConfig,facilitator,undefine
     } finally { pendingPuzzles.clear(); for(const [key,value] of snapshot) pendingPuzzles.set(key,value); stats=priorStats; }
     const body=Buffer.concat(calls.filter(([method])=>method==='write'||method==='end').map(([,args])=>Buffer.from(args[0] || ''))).toString();
     JSON.parse(body); // commitPayment needs the delivered JSON; throwing here refuses to settle
-    durable.prepare({kind:'payment',id,route:`${req.method} ${req.path}`,fingerprint:requestFingerprint(req),createdAt:new Date().toISOString(),requirements,payload,body,status:res.statusCode,entries});
+    durable.prepare({kind:'payment',id,route:`${req.method} ${req.path}`,fingerprint:requestFingerprint(req),paymentDigest:paymentDigest(req),retrievalKeyHash:retrievalKeyHash(req),createdAt:new Date().toISOString(),requirements,payload,body,status:res.statusCode,entries});
     settlementInFlight=true;
   },
   confirmed(req,res,receipt) { settlementInFlight=false; return commitPayment(durable.pending(),receipt); },
@@ -1436,7 +1514,7 @@ app.get("/api/menu", (req, res) => {
     hallOfFirsts: { endpoint: "/api/firsts", price: "free", note: "Titles awarded exactly once, ever. Once claimed, gone forever." },
     freeDemo: { endpoint: "/api/sample/{game}?client={client}&wallet={wallet}&found={found}", method: "GET", price: "free", required: DEMO_SURVEY, note: "One shared demo puzzle per game per UTC day, unscored and rate-limited. Answer three multiple-choice questions as query parameters. Fresh, ranked puzzles are paid." },
     puzzlePacks: { endpoint: "/api/pack/{game}", method: "GET", price: PACK_PRICE, note: `${PACK_SIZE} freshly generated puzzles with verified answers and worked explanations, as JSON. Unscored. ${PACK_LICENSE}` },
-    x402Echo: { endpoint: "/api/x402/echo", methods: ["GET", "POST"], price: ECHO_PRICE, note: "Developer tool: a real Base-mainnet USDC payment that returns the payment you just made, for testing x402 clients." },
+    x402Echo: { endpoint: "/api/x402/echo", methods: ["GET", "POST"], price: ECHO_PRICE, note: "Developer tool: a real, non-refundable Base-mainnet USDC payment that returns the details of the payment you just made, for testing x402 clients. POST bodies over 1 KB are summarised by size and SHA-256; never send secrets." },
     generatorVersion: GENERATOR_VERSION,
     recommendedGames: ["constraint", "automaton", "walk"],
     startHere: { guide: "/connect.html", play: "/api/play/walk", demo: "/api/sample/walk?client=http&wallet=no&found=other", submit: "/api/check", documentation: "/llms.txt" },
@@ -1587,6 +1665,13 @@ app.get("/api/sample/:game", (req, res) => {
   });
 });
 
+// Bodies up to 1 KB are echoed; larger ones are summarised by size and the SHA-256 of their UTF-8
+// JSON serialization. The same compact response is stored, so a retry returns exactly it.
+const ECHO_BODY_MAX_BYTES = 1024;
+function echoBody(body) {
+  const json = JSON.stringify(body ?? null), bytes = Buffer.byteLength(json);
+  return bytes <= ECHO_BODY_MAX_BYTES ? { receivedBody: body ?? null } : { receivedBody: null, receivedBodyOmitted: true, receivedBodyBytes: bytes, receivedBodySha256: hash(json) };
+}
 // paid developer tool: echo the x402 payment back (the receipt arrives in the response headers)
 function echoPayment(req) {
   const payment = readPayment(req), auth = payment.payload?.authorization || {};
@@ -1599,7 +1684,7 @@ function echoPayment(req) {
     network: payment.accepted?.network || payment.network,
     payer: auth.from, payTo: auth.to, amount: auth.value,
     validAfter: auth.validAfter, validBefore: auth.validBefore, nonce: auth.nonce,
-    ...(req.method === "POST" ? { receivedBody: req.body ?? null } : {}),
+    ...(req.method === "POST" ? echoBody(req.body) : {}),
   };
 }
 app.get("/api/x402/echo", (req, res) => res.json(echoPayment(req)));

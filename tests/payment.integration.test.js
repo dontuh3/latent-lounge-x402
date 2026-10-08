@@ -8,12 +8,16 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { randomBytes } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 const root = path.resolve(import.meta.dirname, '..');
 const receiver = '0x' + '0'.repeat(40), a = '0x' + 'a'.repeat(40), b = '0x' + 'b'.repeat(40);
 // The real x402-express package calls this LOCAL facilitator. It deliberately
 // simulates settlement; this suite does not test cryptography or move money.
-async function setup(t, fixtures = {}) {
+// Every test server runs with a tripwire that fails the test if the browser wallet-UI dependency
+// tree loads (the premise of the decode-uri-component audit exception).
+const tripwire = `--require ${path.join(root,'tests/support/wallet-ui-tripwire.cjs')} --import ${pathToFileURL(path.join(root,'tests/support/wallet-ui-tripwire.mjs')).href}`;
+async function setup(t, fixtures = {}, extraEnv = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lounge-test-'));
   for (const [file, value] of Object.entries(fixtures)) fs.writeFileSync(path.join(dir, file), JSON.stringify(value));
   const state = { settlements: 0, reject: false, disconnect: false };
@@ -40,9 +44,9 @@ async function setup(t, fixtures = {}) {
   facilitator.listen(0, '127.0.0.1'); await once(facilitator, 'listening');
   const slot = net.createServer(); slot.listen(0, '127.0.0.1'); await once(slot, 'listening'); const port = slot.address().port; await new Promise(r => slot.close(r));
   const logFile = path.join(dir, 'server.log'); const logFd = fs.openSync(logFile, 'w');
-  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, ADMIN_KEY:'local-test-admin', PAY_TO_ADDRESS: receiver, NETWORK: 'base-sepolia', PORT: String(port), DATA_DIR: dir, FACILITATOR_URL: `http://127.0.0.1:${facilitator.address().port}`, BACKUP_FIRST_RUN_MS: '600000' }, stdio: ['ignore', logFd, logFd] });
+  const child = spawn(process.execPath, ['server.js'], { cwd: root, env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, NODE_OPTIONS: tripwire, TRIPWIRE_FILE: path.join(dir, 'tripwire.log'), ...extraEnv, ADMIN_KEY:'local-test-admin', PAY_TO_ADDRESS: receiver, NETWORK: 'base-sepolia', PORT: String(port), DATA_DIR: dir, FACILITATOR_URL: `http://127.0.0.1:${facilitator.address().port}`, BACKUP_FIRST_RUN_MS: '600000' }, stdio: ['ignore', logFd, logFd] });
   fs.closeSync(logFd); const readLog = () => fs.readFileSync(logFile, 'utf8');
-  t.after(async () => { child.kill(); if(child.exitCode===null) await once(child,'exit'); facilitator.closeAllConnections(); await new Promise(r => facilitator.close(r)); const target=fs.realpathSync(dir), parent=fs.realpathSync(os.tmpdir()); if(path.dirname(target)===parent && path.basename(target).startsWith('lounge-test-')) fs.rmSync(target,{recursive:true,force:true}); });
+  t.after(async () => { child.kill(); if(child.exitCode===null) await once(child,'exit'); const loaded=path.join(dir,'tripwire.log'); assert.equal(fs.existsSync(loaded),false,fs.existsSync(loaded)?fs.readFileSync(loaded,'utf8'):''); facilitator.closeAllConnections(); await new Promise(r => facilitator.close(r)); const target=fs.realpathSync(dir), parent=fs.realpathSync(os.tmpdir()); if(path.dirname(target)===parent && path.basename(target).startsWith('lounge-test-')) fs.rmSync(target,{recursive:true,force:true}); });
   const until = Date.now() + 30000; while (!readLog().includes('open on port') && Date.now() < until && child.exitCode === null) await new Promise(r => setTimeout(r, 25));
   assert.match(readLog(), /open on port/, readLog());
   const base = `http://127.0.0.1:${port}`;
@@ -392,4 +396,164 @@ test('archives page without exposing hidden records and old expired recovery rec
  assert.equal((await s.request('/api/play/sequence',a)).status,200);
  const records=JSON.parse(fs.readFileSync(path.join(s.dir,'payment-receipts.json')));
  assert.equal(records.expired,undefined);assert.ok(records.legacy);assert.ok(records.stillValid);
+});
+
+// ---------- retry authorization, bounded receipt storage and echo guardrails ----------
+const signedHeader = ({ from = a, value = '250000', validBefore = Math.floor(Date.now()/1000)+600, nonce = '0x'+randomBytes(32).toString('hex'), signature = '0x'+'1'.repeat(130) } = {}) =>
+  Buffer.from(JSON.stringify({x402Version:1,scheme:'exact',network:'base-sepolia',payload:{signature,authorization:{from,to:receiver,value,validAfter:'0',validBefore:String(validBefore),nonce}}})).toString('base64');
+const call = async (s, route, headers = {}, body) => {
+  const res = await fetch(s.base+route,{method:body?'POST':'GET',headers:{Accept:'application/json','Content-Type':'application/json',...headers},...(body?{body:JSON.stringify(body)}:{})});
+  return { status: res.status, receipt: res.headers.get('X-PAYMENT-RESPONSE'), body: await res.json().catch(()=>({})) };
+};
+
+test('a forged retry cannot fetch another buyer\'s paid response', async t => {
+  const s = await setup(t); const nonce = '0x'+randomBytes(32).toString('hex'), validBefore = Math.floor(Date.now()/1000)+600;
+  const original = signedHeader({ nonce, validBefore });
+  const bought = await call(s, '/api/pack/walk', { 'X-PAYMENT': original });
+  assert.equal(bought.status, 200); assert.equal(bought.body.puzzles.length, 25);
+  for (const signature of ['0x'+'9'.repeat(130), '']) {
+    const forged = await call(s, '/api/pack/walk', { 'X-PAYMENT': signedHeader({ nonce, validBefore, signature }) });
+    assert.equal(forged.status, 409, `signature ${signature.slice(0,4)}`); assert.equal(forged.body.puzzles, undefined);
+  }
+  const retry = await call(s, '/api/pack/walk', { 'X-PAYMENT': original });
+  assert.equal(retry.status, 200); assert.deepEqual(retry.body.puzzles, bought.body.puzzles); assert.equal(s.state.settlements, 1);
+});
+
+test('retries after the grace window need the retrieval key sent with the purchase', async t => {
+  const s = await setup(t); const past = Math.floor(Date.now()/1000) - 7200, key = 'k'+randomBytes(16).toString('hex');
+  const keyless = signedHeader({ value: '20000', validBefore: past });
+  assert.equal((await call(s, '/api/play/walk', { 'X-PAYMENT': keyless })).status, 200);
+  const closed = await call(s, '/api/play/walk', { 'X-PAYMENT': keyless });
+  assert.equal(closed.status, 410); assert.ok(closed.receipt); assert.equal(closed.body.puzzleId, undefined);
+  const keyed = signedHeader({ value: '20000', validBefore: past });
+  const first = await call(s, '/api/play/walk', { 'X-PAYMENT': keyed, 'X-Lounge-Retrieval-Key': key });
+  assert.equal(first.status, 200);
+  assert.equal((await call(s, '/api/play/walk', { 'X-PAYMENT': keyed, 'X-Lounge-Retrieval-Key': key })).body.puzzleId, first.body.puzzleId);
+  assert.equal((await call(s, '/api/play/walk', { 'X-PAYMENT': keyed })).status, 409);
+  assert.equal((await call(s, '/api/play/walk', { 'X-PAYMENT': keyed, 'X-Lounge-Retrieval-Key': 'wrong-'+key })).status, 409);
+  const fresh = signedHeader({ value: '20000' }), bought = await call(s, '/api/play/walk', { 'X-PAYMENT': fresh });
+  assert.equal((await call(s, '/api/play/walk', { 'X-PAYMENT': fresh })).body.puzzleId, bought.body.puzzleId);
+  assert.equal(s.state.settlements, 3);
+});
+
+test('echo bodies over 1 KB are summarised, and the stored receipt stays small', async t => {
+  const s = await setup(t); const big = { note: 'é'.repeat(1500) }, header = signedHeader({ value: '1000' });
+  const echoed = await call(s, '/api/x402/echo', { 'X-PAYMENT': header }, big);
+  assert.equal(echoed.status, 200); assert.equal(echoed.body.receivedBodyOmitted, true); assert.equal(echoed.body.receivedBody, null);
+  const json = JSON.stringify(big);
+  assert.equal(echoed.body.receivedBodyBytes, Buffer.byteLength(json));
+  assert.equal(echoed.body.receivedBodySha256, (await import('node:crypto')).createHash('sha256').update(json).digest('hex'));
+  const stored = Object.values(JSON.parse(fs.readFileSync(path.join(s.dir, 'payment-receipts.json'))))[0];
+  assert.ok(Buffer.byteLength(stored.body) < 1024, `stored ${Buffer.byteLength(stored.body)} bytes`);
+  assert.deepEqual((await call(s, '/api/x402/echo', { 'X-PAYMENT': header }, big)).body, echoed.body);
+  assert.deepEqual((await call(s, '/api/x402/echo', { 'X-PAYMENT': signedHeader({ value: '1000' }) }, { small: true })).body.receivedBody, { small: true });
+});
+
+test('past the storage budget, responses are delivered but not retained, and sales continue', async t => {
+  const s = await setup(t, {}, { RECEIPT_BODY_BUDGET_BYTES: '3000' });
+  const header = signedHeader();
+  const pack = await call(s, '/api/pack/walk', { 'X-PAYMENT': header });
+  assert.equal(pack.status, 200); assert.equal(pack.body.puzzles.length, 25);
+  const stored = Object.values(JSON.parse(fs.readFileSync(path.join(s.dir, 'payment-receipts.json'))))[0];
+  assert.equal(stored.bodyOmitted, true); assert.equal(stored.body, undefined); assert.ok(stored.bodyBytes > 3000);
+  const retry = await call(s, '/api/pack/walk', { 'X-PAYMENT': header });
+  assert.equal(retry.status, 410); assert.equal(retry.body.bodySha256, stored.bodySha256); assert.ok(retry.receipt);
+  assert.equal((await call(s, '/api/play/walk', { 'X-PAYMENT': signedHeader({ value: '20000' }) })).status, 200);
+  assert.equal(s.state.settlements, 2);
+});
+
+test('echo limits apply per wallet and per IP before payment, and never block a retry', async t => {
+  const s = await setup(t, {}, { ECHO_WALLET_DAILY: '2', ECHO_IP_HOURLY: '4' });
+  const first = signedHeader({ value: '1000' });
+  assert.equal((await call(s, '/api/x402/echo', { 'X-PAYMENT': first })).status, 200);
+  assert.equal((await call(s, '/api/x402/echo', { 'X-PAYMENT': signedHeader({ value: '1000' }) })).status, 200);
+  const overWallet = await call(s, '/api/x402/echo', { 'X-PAYMENT': signedHeader({ value: '1000' }) });
+  assert.equal(overWallet.status, 429); assert.match(overWallet.body.error, /not been charged/);
+  assert.equal((await call(s, '/api/x402/echo', { 'X-PAYMENT': first })).status, 200);
+  assert.equal((await call(s, '/api/x402/echo', { 'X-PAYMENT': signedHeader({ from: b, value: '1000' }) })).status, 200);
+  assert.equal((await call(s, '/api/x402/echo', { 'X-PAYMENT': signedHeader({ from: b, value: '1000' }) })).status, 429);
+  assert.equal((await call(s, '/api/x402/echo')).status, 402);
+  assert.equal(s.state.settlements, 3);
+});
+
+test('the wallet-UI tripwire detects a load, and no source imports that tree', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lounge-tripwire-')), log = path.join(dir, 'tripwire.log');
+  try {
+    const qs = path.join(root, 'node_modules', 'query-string');
+    const run = spawn(process.execPath, ['--require', path.join(root, 'tests/support/wallet-ui-tripwire.cjs'), '-e', `require(${JSON.stringify(qs)})`], { env: { PATH: process.env.PATH, TRIPWIRE_FILE: log }, stdio: 'ignore' });
+    await once(run, 'exit');
+    assert.match(fs.readFileSync(log, 'utf8'), /query-string/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  const sources = ['server.js', 'payment-middleware.js', 'payment-protocol.js', 'payment-recovery.js', 'durable-store.js', 'puzzle-insights.js', 'agent-client.js', ...fs.readdirSync(path.join(root, 'public')).filter(f => f.endsWith('.js')).map(f => 'public/'+f)];
+  for (const file of sources) assert.doesNotMatch(fs.readFileSync(path.join(root, file), 'utf8'), /['"](x402\/paywall|wagmi|@wagmi\/[^'"]*|@walletconnect\/[^'"]*|query-string|decode-uri-component)['"]/, file);
+});
+
+// ---------- operator recovery through the real admin route (simulated chain) ----------
+async function fakeChain(t, { authorizationUsed = false } = {}) {
+  const { keccak256, toHex, pad } = await import('viem');
+  const usdc = '0x036cbd53842c5426634e7929541ec2318f3dcf7e', txs = new Map(), finalized = { number: 1000, timestamp: Math.floor(Date.now()/1000) };
+  const server = http.createServer(async (req, res) => {
+    let raw = ''; for await (const c of req) raw += c;
+    const { id, method, params } = JSON.parse(raw), reply = result => res.end(JSON.stringify({ jsonrpc: '2.0', id, result }));
+    res.setHeader('Content-Type', 'application/json');
+    if (method === 'eth_chainId') return reply('0x14a34');
+    if (method === 'eth_getBlockByNumber') return reply({ number: toHex(finalized.number), timestamp: toHex(finalized.timestamp), hash: '0x'+'b'.repeat(64), parentHash: '0x'+'c'.repeat(64), transactions: [], uncles: [] });
+    if (method === 'eth_getTransactionReceipt') return reply(txs.get(params[0].toLowerCase()) || null);
+    if (method === 'eth_call') return reply(pad(authorizationUsed ? '0x1' : '0x0'));
+    res.end(JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32601, message: 'unsupported' } }));
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => new Promise(r => server.close(r)));
+  const topic = signature => keccak256(toHex(signature));
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    // A finalized settlement transaction carrying AuthorizationUsed and the USDC Transfer.
+    settle(hashValue, { from, to, nonce, value }) {
+      txs.set(hashValue, { transactionHash: hashValue, blockHash: '0x'+'d'.repeat(64), blockNumber: toHex(finalized.number - 5), transactionIndex: '0x0', from, to: usdc, status: '0x1', type: '0x2', gasUsed: '0x1', cumulativeGasUsed: '0x1', effectiveGasPrice: '0x1', contractAddress: null, logsBloom: '0x'+'0'.repeat(512),
+        logs: [
+          { address: usdc, topics: [topic('AuthorizationUsed(address,bytes32)'), pad(from), nonce], data: '0x', blockNumber: toHex(finalized.number - 5), transactionHash: hashValue, logIndex: '0x0', blockHash: '0x'+'d'.repeat(64), transactionIndex: '0x0', removed: false },
+          { address: usdc, topics: [topic('Transfer(address,address,uint256)'), pad(from), pad(to)], data: pad(toHex(BigInt(value))), blockNumber: toHex(finalized.number - 5), transactionHash: hashValue, logIndex: '0x1', blockHash: '0x'+'d'.repeat(64), transactionIndex: '0x0', removed: false },
+        ] });
+    },
+  };
+}
+const admin = (s, method, body, key = 'local-test-admin') => fetch(s.base+'/api/admin/payment-recovery', { method, headers: { 'x-admin-key': key, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }).then(async r => ({ status: r.status, body: await r.json().catch(() => ({})) }));
+
+test('an operator recovers an uncertain purchase through the admin route, exactly once', async t => {
+  const chain = await fakeChain(t), s = await setup(t, {}, { RECOVERY_RPC_URL: chain.url });
+  const nonce = '0x'+randomBytes(32).toString('hex'), header = signedHeader({ value: '20000', nonce });
+  s.state.disconnect = true;
+  assert.equal((await call(s, '/api/play/walk', { 'X-PAYMENT': header })).status, 503);
+  s.state.disconnect = false;
+  assert.equal((await call(s, '/api/play/cipher', { 'X-PAYMENT': signedHeader({ from: b, value: '20000' }) })).status, 503);
+  const pending = await admin(s, 'GET');
+  assert.equal(pending.status, 200); assert.equal(pending.body.pending.payer, a); assert.equal(pending.body.pending.nonce, nonce);
+  const id = pending.body.pending.id, tx = '0x'+'e'.repeat(64), wrongTx = '0x'+'f'.repeat(64);
+  assert.equal((await admin(s, 'POST', { id, transactionHash: tx }, 'wrong-key')).status, 403);
+  assert.equal((await admin(s, 'POST', { id: 'not-the-id', transactionHash: tx })).status, 409);
+  chain.settle(wrongTx, { from: a, to: receiver, nonce, value: 1 });
+  assert.notEqual((await admin(s, 'POST', { id, transactionHash: wrongTx })).status, 200);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(s.dir, 'transaction-journal.json'))).state, 'prepared');
+  chain.settle(tx, { from: a, to: receiver, nonce, value: 20000 });
+  const recovered = await admin(s, 'POST', { id, transactionHash: tx });
+  assert.deepEqual(recovered.body, { recovered: true, cancelled: false });
+  assert.equal((await admin(s, 'POST', { id, transactionHash: tx })).status, 409);
+  const retry = await call(s, '/api/play/walk', { 'X-PAYMENT': header });
+  assert.equal(retry.status, 200); assert.ok(retry.receipt); assert.ok(retry.body.puzzleId);
+  const answer = await s.request('/api/check', null, { puzzleId: retry.body.puzzleId, guess: '0,0' });
+  assert.equal(answer.status, 200);
+  const stats = await (await fetch(s.base+'/api/admin/stats', { headers: { 'x-admin-key': 'local-test-admin' } })).json();
+  assert.deepEqual(stats.sales['GET /api/play/walk'], { count: 1, usdc: 0.02 });
+  assert.equal(s.state.settlements, 1);
+});
+
+test('an operator releases an expired, unused authorization and purchases resume', async t => {
+  const chain = await fakeChain(t, { authorizationUsed: false }), s = await setup(t, {}, { RECOVERY_RPC_URL: chain.url });
+  s.state.disconnect = true;
+  assert.equal((await call(s, '/api/play/walk', { 'X-PAYMENT': signedHeader({ value: '20000', validBefore: Math.floor(Date.now()/1000) - 60 }) })).status, 503);
+  s.state.disconnect = false;
+  const { id } = (await admin(s, 'GET')).body.pending;
+  assert.deepEqual((await admin(s, 'POST', { id, action: 'release-expired' })).body, { recovered: true, cancelled: true });
+  assert.equal((await admin(s, 'GET')).body.pending, null);
+  assert.equal((await call(s, '/api/play/cipher', { 'X-PAYMENT': signedHeader({ from: b, value: '20000' }) })).status, 200);
 });
