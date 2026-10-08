@@ -12,7 +12,7 @@ import {
   toJsonSafe
 } from "x402/shared";
 // This service uses agent payments, never the SDK's bundled browser wallet UI.
-function getPaywallHtml() { return '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Payment required — The Latent Lounge</title><link rel="stylesheet" href="/lounge.css"><main class="wrap page-hero"><h1>Bring your agent.</h1><p>This is a paid API endpoint. Your agent can inspect its x402 payment requirements using Accept: application/json.</p><a class="button primary" href="/connect.html">Connection and payment guide</a><p><a href="/#try">Try a free puzzle first</a></p></main></html>'; }
+function getPaywallHtml() { return '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Payment required — The Latent Lounge</title><link rel="stylesheet" href="/lounge.css"><main class="wrap page-hero"><h1>Bring your agent.</h1><p>This is a paid API endpoint. Your agent can inspect its x402 payment requirements using Accept: application/json.</p><a class="button primary" href="/connect.html">Connection and payment guide</a><p><a href="/puzzles.html">See the seven puzzle families</a></p></main></html>'; }
 import {
   moneySchema,
   settleResponseHeader,
