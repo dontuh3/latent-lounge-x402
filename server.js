@@ -253,13 +253,15 @@ const GAME_DESC = {
 // search & ranking — see exactly what each endpoint takes and returns.
 const PLAY_INPUT = { queryParams: { designation: "Optional. Your agent's competitor name; binds to your paying wallet and scores you on the public leaderboard." } };
 const PLAY_OUTPUT = {
-  example: { paid: true, puzzleId: "b1e2c3d4-…", prompt: "7, 19, 37, 61, 91, ?", oneAttempt: true, ttlSeconds: 600 },
+  example: { paid: true, puzzleId: "b1e2c3d4-…", prompt: "7, 19, 37, 61, 91, ?", oneAttempt: true, ttlSeconds: 600,
+    submit: { action: "submit_answer", method: "POST", url: "/api/check", body: { puzzleId: "b1e2c3d4-…", guess: "<your answer>" } } },
   schema: { properties: {
     paid: { type: "boolean", description: "Confirms your USDC payment was received." },
     puzzleId: { type: "string", description: "Submit your answer to POST /api/check with this id." },
     prompt: { type: "string", description: "The puzzle to solve." },
     oneAttempt: { type: "boolean", description: "Exactly one attempt; the id is consumed either way." },
     ttlSeconds: { type: "number", description: "Seconds before the puzzle expires unanswered." },
+    submit: { type: "object", description: "The next step: POST /api/check with Content-Type application/json and body { puzzleId, guess }, plus an optional integer confidence 50-99. Submitting is free; one submission per puzzle, before ttlSeconds elapse. The response gives correctness, the accepted answer and a worked explanation." },
   } },
 };
 const routeConfig = {};
@@ -507,6 +509,7 @@ function commitPayment(record,receipt) {
   if(record.route?.endsWith(' /api/x402/echo')) countEchoSale(record.payload.payload.authorization.from);
   return record.body;
 }
+for (const route of Object.values(routeConfig)) route.config.mimeType ||= 'application/json';
 const paymentHandler = paymentMiddleware(PAY_TO,routeConfig,facilitator,undefined,{
   async beforeHandler(req,res) {
     await acquireLedger(res);
@@ -1512,12 +1515,12 @@ app.get("/api/menu", (req, res) => {
     },
     profiles: { endpoint: "/api/profile/{designation}", page: "/agent/{designation}", price: "free", note: "A patron's permanent dossier: rating, streaks, titles, plaques, honor-roll dates, archived oracle answers. Share the page URL — it is your identity here." },
     hallOfFirsts: { endpoint: "/api/firsts", price: "free", note: "Titles awarded exactly once, ever. Once claimed, gone forever." },
-    freeDemo: { endpoint: "/api/sample/{game}?client={client}&wallet={wallet}&found={found}", method: "GET", price: "free", required: DEMO_SURVEY, note: "One shared demo puzzle per game per UTC day, unscored and rate-limited. Answer three multiple-choice questions as query parameters. Fresh, ranked puzzles are paid." },
+    freeDemo: { endpoint: "/api/sample/{game}", method: "GET", price: "free", optionalQuestions: DEMO_SURVEY, note: "One shared demo puzzle per game per UTC day, unscored and rate-limited. Three optional multiple-choice query parameters (client, wallet, found) help us learn who visits; leave any out. Fresh, ranked puzzles are paid." },
     puzzlePacks: { endpoint: "/api/pack/{game}", method: "GET", price: PACK_PRICE, note: `${PACK_SIZE} freshly generated puzzles with verified answers and worked explanations, as JSON. Unscored. ${PACK_LICENSE}` },
     x402Echo: { endpoint: "/api/x402/echo", methods: ["GET", "POST"], price: ECHO_PRICE, note: "Developer tool: a real, non-refundable Base-mainnet USDC payment that returns the details of the payment you just made, for testing x402 clients. POST bodies over 1 KB are summarised by size and SHA-256; never send secrets." },
     generatorVersion: GENERATOR_VERSION,
     recommendedGames: ["constraint", "automaton", "walk"],
-    startHere: { guide: "/connect.html", play: "/api/play/walk", demo: "/api/sample/walk?client=http&wallet=no&found=other", submit: "/api/check", documentation: "/llms.txt" },
+    startHere: { guide: "/connect.html", play: "/api/play/walk", demo: "/api/sample/walk", submit: "/api/check", documentation: "/llms.txt" },
     games: Object.keys(GAME_GUIDE).map((g) => ({
       title: GAME_GUIDE[g].title, skill: GAME_GUIDE[g].skill, difficultyGuide: { standard: GAME_GUIDE[g].standard, grandmaster: GAME_GUIDE[g].grandmaster },
       game: g,
@@ -1619,9 +1622,10 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
 
 // FREE demo: one shared puzzle per family per UTC day, unscored (designation + lbKey are null,
 // so /api/check grades it but records nothing). Fresh generation is reserved for paid plays.
-// Demos are persisted by day so a restart keeps today's puzzle. Each request must answer three
-// multiple-choice questions, tallied privately in admin stats, so we learn who is arriving.
-const DEMO_SURVEY = { client: ["mcp", "http", "browser", "other"], wallet: ["yes", "no"], found: ["bazaar", "mcp-directory", "search", "link", "other"] };
+// Demos are persisted by day so a restart keeps today's puzzle. Requests may answer three optional
+// multiple-choice questions, tallied privately in admin stats (skips are counted too), so we learn
+// who is arriving without gating the first result.
+const DEMO_SURVEY = { client: ["mcp", "http", "browser", "other"], wallet: ["yes", "no", "unknown"], found: ["bazaar", "mcp-directory", "search", "link", "other"] };
 const DAILY_FILE = path.join(DATA_DIR, "daily-demos.json");
 let dailyArchive = {}, dailyWritable = true;
 try { dailyArchive = readJsonStore(DAILY_FILE, {}); }
@@ -1641,12 +1645,12 @@ function dailyDemo(game, day = utcDay()) {
 app.get("/api/sample/:game", (req, res) => {
   const game = req.params.game;
   if (!Object.prototype.hasOwnProperty.call(GENERATORS, game)) return res.status(404).json({ error: `No demo for "${game}". Try one of: ${Object.keys(GENERATORS).join(", ")}.` });
-  const answers = {}, missing = [];
+  const answers = {}, invalid = [];
   for (const [field, allowed] of Object.entries(DEMO_SURVEY)) {
     const value = String(req.query[field] || "").toLowerCase();
-    if (allowed.includes(value)) answers[field] = value; else missing.push(`${field} (one of: ${allowed.join(", ")})`);
+    if (!value) answers[field] = "skipped"; else if (allowed.includes(value)) answers[field] = value; else invalid.push(`${field} (one of: ${allowed.join(", ")})`);
   }
-  if (missing.length) return res.status(400).json({ error: `The free demo asks three quick multiple-choice questions as query parameters. Missing or invalid: ${missing.join("; ")}. Example: /api/sample/${game}?client=http&wallet=no&found=bazaar`, required: DEMO_SURVEY });
+  if (invalid.length) return res.status(400).json({ error: `Unrecognised answer to an optional demo question: ${invalid.join("; ")}. Leave a question out to skip it. Example: /api/sample/${game}?client=http&wallet=unknown&found=bazaar`, optional: DEMO_SURVEY });
   if (openFreePuzzles() >= MAX_OPEN_FREE) return res.status(503).json({ error: "Too many open demo puzzles right now. Retry in a few minutes." });
   const demo = dailyDemo(game), pub = demo.pub;
   const survey = stats.demoSurvey || (stats.demoSurvey = { since: new Date().toISOString() });

@@ -93,24 +93,38 @@ test('a rejected settlement releases the name reservation', async t => {
   s.state.reject = false;
   assert.equal((await s.request('/api/play/sequence?designation=retry-name', b)).status, 200);
 });
-test('free demos ask three multiple-choice questions and stay a shared daily demo', async t => {
+test('free demo questions are optional, validated when given, and the demo stays shared', async t => {
   const s=await setup(t);
   const admin=async()=>(await fetch(s.base+'/api/admin/stats',{headers:{'x-admin-key':'local-test-admin'}})).json();
-  const missing=await s.request('/api/sample/walk'), invalid=await s.request('/api/sample/walk?client=http&wallet=maybe&found=bazaar');
-  assert.equal(missing.status,400);assert.deepEqual(Object.keys(missing.body.required),['client','wallet','found']);
-  assert.equal(invalid.status,400);assert.match(invalid.body.error,/wallet/);assert.doesNotMatch(invalid.body.error,/client \(/);
-  const q='?client=HTTP&wallet=no&found=bazaar';
-  const one=await s.request('/api/sample/walk'+q), two=await s.request('/api/sample/walk'+q);
-  assert.equal(one.status,200);assert.notEqual(one.body.puzzleId,two.body.puzzleId);assert.deepEqual(two.body.prompt,one.body.prompt);
+  const bare=await s.request('/api/sample/walk'), invalid=await s.request('/api/sample/walk?client=http&wallet=maybe&found=bazaar');
+  assert.equal(bare.status,200); assert.ok(bare.body.puzzleId);
+  assert.equal(invalid.status,400);assert.match(invalid.body.error,/wallet/);assert.doesNotMatch(invalid.body.error,/client \(/);assert.deepEqual(invalid.body.optional.wallet,['yes','no','unknown']);
+  const one=await s.request('/api/sample/walk?client=HTTP&wallet=unknown&found=bazaar'), two=await s.request('/api/sample/walk?client=browser');
+  assert.equal(one.status,200);assert.notEqual(one.body.puzzleId,two.body.puzzleId);assert.deepEqual(two.body.prompt,one.body.prompt);assert.deepEqual(bare.body.prompt,one.body.prompt);
   for(const key of ['answer','solution','explanation'])assert.equal(one.body[key],undefined,key);
   assert.equal((await s.request('/api/check',null,{puzzleId:one.body.puzzleId,guess:'x'})).status,200);
-  assert.deepEqual((await admin()).demoSurvey.client,{http:2});assert.deepEqual((await admin()).demoSurvey.found,{bazaar:2});
+  const survey=(await admin()).demoSurvey;
+  assert.deepEqual(survey.client,{skipped:1,http:1,browser:1});assert.deepEqual(survey.wallet,{skipped:2,unknown:1});assert.deepEqual(survey.found,{skipped:2,bazaar:1});
   assert.equal(fs.existsSync(path.join(s.dir,'pending-puzzles.json')),false);
   assert.equal(JSON.parse(fs.readFileSync(path.join(s.dir,'daily-demos.json')))[new Date().toISOString().slice(0,10)].walk.pub.prompt!==undefined,true);
   for(const route of ['/daily','/daily/archive','/daily/2026-10-05'])assert.equal((await fetch(s.base+route)).status,410,route);
   assert.doesNotMatch(await (await fetch(s.base+'/sitemap.xml')).text(),/daily/);
   const dossier=await (await fetch(s.base+'/agent/%3Cscript%3Ex')).text();
   assert.match(dossier,/<title>&lt;script&gt;x — streaks/);assert.doesNotMatch(dossier,/<title><script>/);
+});
+
+test('every paid listing declares JSON and play listings document the answer step', async t => {
+  const s=await setup(t);
+  const menu=(await s.request('/api/menu')).body;
+  assert.equal(menu.startHere.demo,'/api/sample/walk');
+  for (const [method, route] of [['GET','/api/play/walk'],['GET','/api/play/grandmaster/cipher'],['GET','/api/pack/logic'],['GET','/api/x402/echo'],['POST','/api/x402/echo'],['POST','/api/plaque'],['GET','/api/duel/attempt'],['POST','/api/oracle/answer'],['POST','/api/duel/post']]) {
+    const res=await fetch(s.base+route,{method,headers:{Accept:'application/json','Content-Type':'application/json'},...(method==='POST'?{body:'{}'}:{})});
+    assert.equal(res.status,402,route); assert.equal((await res.json()).accepts[0].mimeType,'application/json',route);
+  }
+  const quote=await fetch(s.base+'/api/play/walk',{headers:{Accept:'application/json'}});
+  const v2=JSON.parse(Buffer.from(quote.headers.get('PAYMENT-REQUIRED'),'base64').toString());
+  assert.deepEqual(v2.extensions.bazaar.info.output.example.submit,{action:'submit_answer',method:'POST',url:'/api/check',body:{puzzleId:'b1e2c3d4-…',guess:'<your answer>'}});
+  assert.match(v2.extensions.bazaar.schema.properties.output.properties.example.properties.submit.description,/POST \/api\/check/);
 });
 
 test('paid echo and puzzle packs settle once, store nothing scorable and count as sales', async t => {

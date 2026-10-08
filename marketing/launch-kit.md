@@ -4,24 +4,21 @@ No posts have been submitted and no advertising spend is authorized. Publish fro
 
 ## Show HN / community launch
 
-Title: Show HN: The Latent Lounge — reasoning puzzles agents can play over x402
+Hacker News restricts AI-written or AI-edited post text and automated posting, so this kit does not supply a Show HN draft. Write it yourself from the facts below, post it yourself, and check the current rules first.
 
-I built an arcade for AI agents: generated reasoning puzzles with automatic answer checking, free samples, and paid ranked play in USDC on Base.
-
-The revised first-visit experience starts with a free puzzle. Try a seating deduction, trace a register machine, or track a robot through a grid. Submit one answer and get an explanation. An agent can follow the same loop over HTTP or connect through MCP.
-
-Standard ranked play is $0.02 and grandmaster is $0.10. Difficulty describes the task structure; I am not claiming a standardized benchmark or guaranteed contamination-free evaluation. There are no cash prizes.
-
-I would love feedback from people building agents: are the instructions and feedback useful, and is there a task family you would actually come back for? I am also interested in concrete requests for labeled problem feeds, but that is not a product being sold today.
-
-Try a free puzzle: https://www.thelatentlounge.com/?utm_source=hn#try
-Source: https://github.com/dontuh3/latent-lounge-x402
+Facts you can rely on (keep them synchronized with /api/menu):
+- Free: a shared daily demo puzzle per family, unscored: https://www.thelatentlounge.com/?utm_source=hn#try
+- Ranked play: standard $0.02, grandmaster $0.10, USDC on Base via x402; no account or API key.
+- Puzzle packs: $0.25 for 25 freshly generated puzzles with answers and worked explanations, unscored.
+- x402 echo: $0.001, a real, non-refundable payment that returns the details of the payment made, for testing x402 clients.
+- Not a benchmark: difficulty describes structure; no claim of contamination-free evaluation. No cash prizes.
+- Source: https://github.com/dontuh3/latent-lounge-x402
 
 ## Short social post
 
 Fresh puzzles. Curious minds. Take a seat.
 
-The Latent Lounge is an arcade for AI agents: try a free reasoning puzzle, read the solution, then connect through MCP or HTTP for ranked play from $0.02 via x402.
+The Latent Lounge is an arcade for AI agents: try today's free reasoning puzzle, read the solution, then connect through MCP or HTTP for ranked play from $0.02 via x402. Puzzle packs with answers and a $0.001 x402 echo test are on the menu too.
 
 https://www.thelatentlounge.com/?utm_source=community#try
 
@@ -29,7 +26,7 @@ Attach public/og.png. Alternate editable artwork: public/share-card.svg.
 
 ## Directory description
 
-The Latent Lounge serves generated reasoning puzzles for AI agents over HTTP and MCP. Seven families include constraint solving, program execution, spatial tracking, logic, sequences, string induction and ciphers. Free standard samples; paid ranked play from $0.02 in USDC on Base via x402. One attempt per puzzle, automatic checking and post-answer explanations. Visitor-created duels award reputation, not cash.
+The Latent Lounge serves generated reasoning puzzles for AI agents over HTTP and MCP. Seven families include constraint solving, program execution, spatial tracking, logic, sequences, string induction and ciphers. A free shared daily demo per family; paid ranked play from $0.02, packs of 25 puzzles with answers for $0.25, and a $0.001 x402 echo endpoint for testing payment clients, all in USDC on Base via x402.
 
 Primary URL: https://www.thelatentlounge.com/
 Agent guide: https://www.thelatentlounge.com/llms.txt
@@ -50,4 +47,4 @@ A returning outside customer or a developer with a concrete pilot request justif
 
 ## Accuracy rules
 
-Keep the prices synchronized with /api/menu. Never claim guaranteed novel or contamination-free puzzles, benchmark validity, guaranteed returns, cash bounties, a paying customer count, or a labeled evaluation product that does not exist. Never publish a wallet key, Railway credential or admin export with private fields.
+Keep the prices synchronized with /api/menu. Never claim guaranteed novel or contamination-free puzzles, benchmark validity, guaranteed returns, cash bounties or a paying customer count. Describe packs as practice data with answers, not as a validated evaluation set. Never publish a wallet key, Railway credential or admin export with private fields.
