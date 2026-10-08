@@ -9,8 +9,8 @@
         "0.2.2"
       ],
       "severity": "moderate",
-      "reason": "Only via query-string in WalletConnect/browser wallet connectors brought by x402 -> wagmi. Server uses x402 scheme/shared/verify and CDP facilitator; runtime import checks confirm query-string and decoder are not loaded. Bundled browser wallet paywall is not served. Fixed 0.5.0 is ESM-only and not a compatible drop-in for the CommonJS consumer. Re-review before enabling wallet UI or changing imports.",
-      "reviewBy": "2026-10-20"
+      "reason": "Accepted by the owner (dontuh3) on 2026-10-08 as a dated bridge, not a fix. decode-uri-component 0.2.2 is only reachable through x402/paywall (x402 -> wagmi -> WalletConnect -> query-string); the service serves its own paywall HTML and nothing imports x402/paywall. Evidence on 2026-10-08 (server defc602, MCP 5dbea77): module tracing across the full integration suite (74 server processes: v1/v2 verify, settle, rejection, malformed and uncertain settlement, replay, recovery), the recovery and journal unit tests, a CDP-facilitator verification attempt, and the MCP paid path (repo lockfile and a consumer install from the packed tarball) loaded none of that tree; a positive control did. tests/support/wallet-ui-tripwire.* now fails the suite if it ever loads. 0.5.0 is ESM-only and breaks the CommonJS query-string consumer, so no override. Remediation: migrate to the modular @x402 v2 packages, which do not depend on wagmi. Re-review on any import or dependency change, and by the reviewBy date.",
+      "reviewBy": "2026-12-01"
     }
   ]
 }
