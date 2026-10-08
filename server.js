@@ -23,7 +23,6 @@ import { GAME_GUIDE, GENERATOR_VERSION, puzzleMetadata, puzzleFeedback } from ".
 import { paymentMiddleware } from "./payment-middleware.js";
 import { readPayment, receiptHeaders } from './payment-protocol.js';
 import { DurableStore } from "./durable-store.js";
-import { SITE, escapeHtml, shiftDay, renderToday, renderDay, renderArchive, renderNotFound, renderSitemap } from "./daily-pages.js";
 import { verifyRecovery } from "./payment-recovery.js";
 import rateLimit from "express-rate-limit";
 
@@ -201,13 +200,6 @@ const reportLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: "Report limit reached. The proprietor reads every report; repetition does not add weight." },
 });
-const sampleLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  limit: Number(process.env.RATE_LIMIT_SAMPLE || 20), // free sample puzzles per IP per hour — generous to taste, tight enough that the generator can't be scraped at scale
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Free-sample limit reached — the first taste is on the house, not the whole kitchen. Pay $0.02 via x402 to keep playing." },
-});
 const profileLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
   limit: Number(process.env.RATE_LIMIT_PROFILE || 30), // profile lookups per IP per 5 min — each one reads & scans every datastore, so keep it tighter than the general /api limit
@@ -218,7 +210,6 @@ const profileLimiter = rateLimit({
 app.use("/api/", apiLimiter);
 app.use("/api/check", checkLimiter);
 app.use("/api/report", reportLimiter);
-app.use("/api/sample", sampleLimiter);
 app.use("/api/profile", profileLimiter);
 
 // ---------- x402 paywall (this is the entire payment integration) ----------
@@ -1148,9 +1139,8 @@ function tourneyStandings() {
 // Persisted to disk so paid, unanswered puzzles survive a redeploy/restart.
 const pendingPuzzles = new Map(); // puzzleId -> { answer, game, designation, expires }
 const PUZZLE_TTL_MS = 10 * 60 * 1000; // 10 minutes to answer
-// Free demos and paid puzzles have separate caps, so a flood of demos cannot block sales.
-const MAX_OPEN_PAID = 10000, MAX_OPEN_FREE = 2000;
-function openPuzzles(free) { let n = 0; for (const p of pendingPuzzles.values()) if (Boolean(p.free) === free) n++; return n; }
+const MAX_OPEN_PAID = 10000;
+function openPaidPuzzles() { let n = 0; for (const p of pendingPuzzles.values()) if (!p.free) n++; return n; }
 const PENDING_FILE = path.join(DATA_DIR, "pending-puzzles.json");
 for (const [id, p] of Object.entries(readJsonStore(PENDING_FILE, {}))) {
   if (!p.free) pendingPuzzles.set(id, p);
@@ -1385,10 +1375,9 @@ app.get("/api/menu", (req, res) => {
     },
     profiles: { endpoint: "/api/profile/{designation}", page: "/agent/{designation}", price: "free", note: "A patron's permanent dossier: rating, streaks, titles, plaques, honor-roll dates, archived oracle answers. Share the page URL — it is your identity here." },
     hallOfFirsts: { endpoint: "/api/firsts", price: "free", note: "Titles awarded exactly once, ever. Once claimed, gone forever." },
-    freeSample: { endpoint: "/api/sample/{game}", method: "GET", price: "free", note: "A free daily demo per game — the same puzzle for every visitor, refreshed each UTC day, unscored (rate-limited) — to see the format. Every paid puzzle is freshly generated per request: $0.02 to play for real and rank." },
     generatorVersion: GENERATOR_VERSION,
     recommendedGames: ["constraint", "automaton", "walk"],
-    startHere: { guide: "/connect.html", sample: "/api/sample/walk", submit: "/api/check", documentation: "/llms.txt" },
+    startHere: { guide: "/connect.html", play: "/api/play/walk", submit: "/api/check", documentation: "/llms.txt" },
     games: Object.keys(GAME_GUIDE).map((g) => ({
       title: GAME_GUIDE[g].title, skill: GAME_GUIDE[g].skill, difficultyGuide: { standard: GAME_GUIDE[g].standard, grandmaster: GAME_GUIDE[g].grandmaster },
       game: g,
@@ -1437,7 +1426,7 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
     // reaching here means the x402 middleware verified & settled payment
     const { name: designation, error: nameErr } = resolveDesignation(req, res, req.query.designation);
     if (nameErr) return res.status(403).json({ error: nameErr });
-    if(openPuzzles(false)>=MAX_OPEN_PAID)return res.status(503).json({error:'The lounge has too many open puzzles. Retry later.'});
+    if(openPaidPuzzles()>=MAX_OPEN_PAID)return res.status(503).json({error:'The lounge has too many open puzzles. Retry later.'});
   const generated = gen();
     const { answer, norm, solution, ...pub } = generated;
     Object.assign(pub, puzzleMetadata(generated));
@@ -1488,46 +1477,11 @@ for (const [game, gen] of Object.entries(GENERATORS)) {
   });
 }
 
-// FREE sample: unscored, no wallet, no payment, rate-limited. designation + lbKey are
-// null, so /api/check grades it but records nothing (no leaderboard, no streak, no name
-// binding). Free samples are a daily demo: one puzzle per family per UTC day, shared by every visitor.
-// A free path that minted fresh puzzles (with answers revealed by /api/check) gave away the
-// exact thing /api/play sells, so fresh generation is reserved for paid plays.
-// Demos are persisted by day, so a restart keeps today's puzzle and /daily can archive past
-// days with their answers.
-const DAILY_FILE = path.join(DATA_DIR, "daily-demos.json");
-let dailyArchive = {}, dailyWritable = true;
-try { dailyArchive = readJsonStore(DAILY_FILE, {}); }
-catch { dailyWritable = false; console.error("Daily demo archive unreadable; serving demos from memory and preserving the file."); }
-function dailyDemo(game, day = utcDay()) {
-  if (!dailyArchive[day]?.[game]) {
-    const generated = GENERATORS[game]();
-    const { answer, norm, solution, ...pub } = generated;
-    Object.assign(pub, puzzleMetadata(generated));
-    const entry = { pub, answer: String(answer).trim().toLowerCase(), ...(norm ? { norm } : {}), explanation: puzzleFeedback(generated) };
-    const next = { ...dailyArchive, [day]: { ...dailyArchive[day], [game]: entry } };
-    if (dailyWritable) writeJsonAtomic(DAILY_FILE, next, "Daily demos");
-    dailyArchive = next;
-  }
-  return dailyArchive[day][game];
-}
+// Free demo puzzles have ended: every puzzle is paid. Old links and MCP clients still get a
+// clear pointer to the paid route instead of a bare 404.
 app.get("/api/sample/:game", (req, res) => {
-  if (!Object.prototype.hasOwnProperty.call(GENERATORS, req.params.game)) return res.status(404).json({ error: `No free sample for "${req.params.game}". Try one of: ${Object.keys(GENERATORS).join(", ")}.` });
-  if (openPuzzles(true) >= MAX_OPEN_FREE) return res.status(503).json({ error: "Too many open demo puzzles right now. Retry in a few minutes." });
-  const demo = dailyDemo(req.params.game), pub = demo.pub;
-  const puzzleId = crypto.randomUUID();
-  pendingPuzzles.set(puzzleId, { settled: false, explanation: structuredClone(demo.explanation), generatorVersion: pub.generatorVersion || GENERATOR_VERSION, game: req.params.game, answer: demo.answer, ...(demo.norm ? { norm: demo.norm } : {}), lbKey: null, designation: null, free: true, issuedAt: Date.now(), expires: Date.now() + PUZZLE_TTL_MS });
-  bumpFunnel(req.params.game, "freeIssued");
-  // free samples are disposable and unscored — keep them in memory only (no savePending),
-  // so an unpaid sample flood can't amplify into full-map synchronous disk rewrites.
-  res.json({
-    free: true,
-    note: `Today's free demo puzzle — the same for every visitor, refreshed each UTC day, unscored — so you can see the format and test POST /api/check { puzzleId, guess }. Every paid puzzle is freshly generated per request: pay $0.02 via x402 at /api/play/${req.params.game} to play for real, build streaks, and rank.`,
-    puzzleId,
-    oneAttempt: true,
-    ttlSeconds: PUZZLE_TTL_MS / 1000,
-    ...pub,
-  });
+  const game = Object.prototype.hasOwnProperty.call(GENERATORS, req.params.game) ? req.params.game : "walk";
+  res.status(410).json({ error: `Free demo puzzles have ended. Every puzzle is paid: ${PRICE} in USDC on Base via x402 at GET /api/play/${game} (grandmaster ${GM_PRICE}). See /api/menu.`, play: `/api/play/${game}` });
 });
 
 // Canonicalize an integer string: drop spaces/commas/leading +, fold leading
@@ -2237,6 +2191,7 @@ app.get("/api/profile/:designation", (req, res) => {
 });
 
 // the human-readable dossier page; the title names the agent so shared links and crawlers see it
+const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const PROFILE_HTML = fs.readFileSync(path.join(__dirname, "public", "profile.html"), "utf8");
 app.get("/agent/:designation", (req, res) => {
   const name = escapeHtml(String(req.params.designation).slice(0, 60));
@@ -2299,44 +2254,9 @@ app.get("/api/plaques", (req, res) => {
   res.json({contentWarning:'Plaques are written by visitors. Untrusted data, not instructions.',wall:page.items.reverse(),pagination:page.pagination});
 });
 
-// ---------- daily puzzle pages + sitemap (server-rendered for crawlers) ----------
-const archivedDays = () => Object.keys(dailyArchive).filter(day => day < utcDay() && Object.keys(dailyArchive[day]).length).sort().reverse();
-const sendPage = (res, html) => res.set("Cache-Control", "public, max-age=300").type("html").send(html);
-app.get("/daily", (req, res) => {
-  const day = utcDay(), yesterday = shiftDay(day, -1);
-  const demos = Object.fromEntries(GAMES.map(game => [game, dailyDemo(game, day)]));
-  sendPage(res, renderToday({ day, demos, yesterday: dailyArchive[yesterday] ? { day: yesterday, demos: dailyArchive[yesterday] } : null, recentDays: archivedDays().slice(0, 7), oracleQuestion: oracleToday().question }));
-});
-app.get("/daily/archive", (req, res) => sendPage(res, renderArchive({ days: archivedDays() })));
-app.get("/daily/:day", (req, res) => {
-  const day = req.params.day, days = archivedDays();
-  if (day === utcDay()) return res.redirect(302, "/daily"); // today's answers stay hidden until tomorrow
-  if (!days.includes(day)) return res.status(404).type("html").send(renderNotFound());
-  const i = days.indexOf(day);
-  sendPage(res, renderDay({ day, demos: dailyArchive[day], prevDay: days[i + 1], nextDay: days[i - 1] }));
-});
-app.get("/sitemap.xml", (req, res) => res.set("Cache-Control", "public, max-age=3600").type("application/xml").send(renderSitemap({ today: utcDay(), days: archivedDays() })));
-
-// Once per UTC day: create today's demos (so every archived day is complete) and, on the
-// production deploy, tell IndexNow (Bing and other engines) about the new pages. The key is
-// public by design: it's served at /<key>.txt to prove the site sent the ping.
-const INDEXNOW_KEY = "3768f5b5f76dd50bbcb67348775ca303";
-const INDEXNOW_ENABLED = process.env.INDEXNOW !== "off" && NETWORK === "base" && Boolean(process.env.RAILWAY_ENVIRONMENT_NAME || process.env.RAILWAY_ENVIRONMENT);
-let dailyPublishedFor = null;
-async function publishDaily() {
-  const day = utcDay();
-  if (dailyPublishedFor === day) return;
-  dailyPublishedFor = day;
-  try { for (const game of GAMES) dailyDemo(game, day); } catch (e) { console.error("Daily demo generation failed:", e.message); }
-  if (!INDEXNOW_ENABLED) return;
-  const yesterday = shiftDay(day, -1);
-  const urlList = [`${SITE}/daily`, `${SITE}/daily/archive`, ...(dailyArchive[yesterday] ? [`${SITE}/daily/${yesterday}`] : [])];
-  try {
-    const r = await fetch("https://api.indexnow.org/indexnow", { method: "POST", headers: { "Content-Type": "application/json; charset=utf-8" }, body: JSON.stringify({ host: new URL(SITE).host, key: INDEXNOW_KEY, keyLocation: `${SITE}/${INDEXNOW_KEY}.txt`, urlList }), signal: AbortSignal.timeout(10000) });
-    console.log(`IndexNow: submitted ${urlList.length} URLs (${r.status})`);
-  } catch (e) { console.error("IndexNow ping failed:", e.message); }
-}
-setInterval(publishDaily, 10 * 60 * 1000).unref();
+// The free daily puzzle pages were retired; tell crawlers they are gone for good.
+const GONE_HTML = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>Daily puzzles have ended — The Latent Lounge</title><link rel="stylesheet" href="/lounge.css"></head><body><main class="wrap page-hero"><h1>Daily puzzles have ended.</h1><p>Every puzzle at The Latent Lounge is now paid per request: $0.02 in USDC on Base via x402, freshly generated and ranked.</p><a class="button primary" href="/connect.html">Connect your agent ↗</a></main></body></html>';
+app.get(["/daily", "/daily/*"], (req, res) => res.status(410).type("html").send(GONE_HTML));
 
 // frontend (gate + garden + demo arcade) is free
 app.use(express.static(path.join(__dirname, "public")));
@@ -2530,7 +2450,7 @@ process.on("unhandledRejection", (reason) => console.error("Unhandled promise re
 // corruption or a bad write; if BACKUP_WEBHOOK_URL is set, each snapshot is also
 // POSTed OFF-VOLUME — the only copy that survives total volume loss. (--selftest
 // exits before this runs, so backups never fire during tests.)
-const BACKUP_FILES = ["leaderboard.json", "tournament.json", "duels.json", "duelists.json", "oracle.json", "plaques.json", "names.json", "streaks.json", "firsts.json", "reports.json", "rated-pairs.json", "pending-puzzles.json", "payment-receipts.json", "answer-receipts.json", "transaction-journal.json", "daily-demos.json"];
+const BACKUP_FILES = ["leaderboard.json", "tournament.json", "duels.json", "duelists.json", "oracle.json", "plaques.json", "names.json", "streaks.json", "firsts.json", "reports.json", "rated-pairs.json", "pending-puzzles.json", "payment-receipts.json", "answer-receipts.json", "transaction-journal.json"];
 const BACKUP_DIR = path.join(DATA_DIR, "backups");
 const BACKUP_KEEP = Math.max(1, Number(process.env.BACKUP_KEEP || 30));
 const BACKUP_INTERVAL_MS = Math.max(1, Number(process.env.BACKUP_INTERVAL_HOURS || 6)) * 3600 * 1000;
@@ -2574,7 +2494,6 @@ console.log(`Backups: every ${process.env.BACKUP_INTERVAL_HOURS || 6}h -> ${BACK
 
 if (!durable.pending().state) durable.transaction(() => sweepExpired());
 app.listen(PORT, () => {
-  publishDaily();
   console.log(`The Latent Lounge is open on port ${PORT}`);
   console.log(`Network: ${NETWORK} · Price per play: ${PRICE} · Paying to: ${PAY_TO}`);
 });

@@ -77,9 +77,17 @@ test('a rejected settlement releases the name reservation', async t => {
   s.state.reject = false;
   assert.equal((await s.request('/api/play/sequence?designation=retry-name', b)).status, 200);
 });
-test('free samples never enter the paid pending store', async t => {
-  const s=await setup(t);const sample=await s.request('/api/sample/sequence');await s.request('/api/play/sequence?designation=sample-test',a);
-  const pending=JSON.parse(fs.readFileSync(path.join(s.dir,'pending-puzzles.json')));assert.equal(pending[sample.body.puzzleId],undefined);
+test('free demos and daily pages are retired and issue nothing', async t => {
+  const s=await setup(t);
+  const demo=await s.request('/api/sample/walk'), unknown=await s.request('/api/sample/nope');
+  assert.equal(demo.status,410);assert.equal(demo.body.play,'/api/play/walk');assert.match(demo.body.error,/paid/);
+  assert.equal(unknown.status,410);assert.equal(unknown.body.play,'/api/play/walk');
+  assert.equal(fs.existsSync(path.join(s.dir,'pending-puzzles.json')),false);assert.equal(fs.existsSync(path.join(s.dir,'daily-demos.json')),false);
+  for(const route of ['/daily','/daily/archive','/daily/2026-10-05'])assert.equal((await fetch(s.base+route)).status,410,route);
+  assert.doesNotMatch(await (await fetch(s.base+'/sitemap.xml')).text(),/daily/);
+  assert.doesNotMatch(JSON.stringify((await s.request('/api/menu')).body),/api\/sample/);
+  const dossier=await (await fetch(s.base+'/agent/%3Cscript%3Ex')).text();
+  assert.match(dossier,/<title>&lt;script&gt;x — streaks/);assert.doesNotMatch(dossier,/<title><script>/);
 });
 test('corrupt ledgers return unavailable and preserve the damaged bytes',async t=>{
  const s=await setup(t);const file=path.join(s.dir,'leaderboard.json');fs.writeFileSync(file,'{broken');const r=await s.request('/api/leaderboard');assert.equal(r.status,503);assert.equal(fs.readFileSync(file,'utf8'),'{broken');
@@ -88,31 +96,20 @@ test('rejected settlement creates no plaque or identity',async t=>{
  const s=await setup(t);s.state.reject=true;const r=await s.request('/api/plaque',a,{designation:'reject-test',inscription:'test'});assert.equal(r.status,402);assert.equal(r.settled,false);assert.equal(fs.existsSync(path.join(s.dir,'plaques.json')),false);assert.equal(fs.existsSync(path.join(s.dir,'names.json')),false);
 });
 
-test('every free generator withholds its solution until submission', async t => {
+test('every paid generator withholds its solution until submission', async t => {
   const s = await setup(t);
   for (const game of ['walk','automaton','constraint','sequence','logic','induction','cipher']) {
-    const sample = await s.request(`/api/sample/${game}`);
-    assert.equal(sample.status, 200, game);
-    for (const key of ['answer','solution','explanation']) assert.equal(sample.body[key], undefined, `${game} leaked ${key}`);
-    assert.equal(sample.body.generatorVersion, '2026-09-20.2');
-    assert.equal(sample.body.difficulty.calibrated, false);
-    const result = await s.request('/api/check', null, {puzzleId:sample.body.puzzleId,guess:'deliberately incorrect'});
+    const bought = await s.request(`/api/play/${game}`, a);
+    assert.equal(bought.status, 200, game);
+    for (const key of ['answer','solution','explanation']) assert.equal(bought.body[key], undefined, `${game} leaked ${key}`);
+    assert.equal(bought.body.generatorVersion, '2026-09-20.2');
+    assert.equal(bought.body.difficulty.calibrated, false);
+    const result = await s.request('/api/check', null, {puzzleId:bought.body.puzzleId,guess:'deliberately incorrect'});
     assert.equal(result.status,200); assert.equal(result.body.correct,false);
     assert.equal(typeof result.body.answer,'string'); assert.ok(result.body.explanation.summary);
-    assert.equal((await s.request('/api/check',null,{puzzleId:sample.body.puzzleId,guess:result.body.answer})).status,410);
+    assert.equal((await s.request('/api/check',null,{puzzleId:bought.body.puzzleId,guess:result.body.answer})).status,410);
   }
   assert.equal(fs.existsSync(path.join(s.dir,'leaderboard.json')),false);
-  assert.equal(fs.existsSync(path.join(s.dir,'pending-puzzles.json')),false);
-});
-
-test('free samples are a shared daily demo, not fresh content', async t => {
-  const s = await setup(t);
-  for (const game of ['walk','automaton','constraint']) {
-    const one = await s.request(`/api/sample/${game}`), two = await s.request(`/api/sample/${game}`);
-    assert.equal(one.status, 200, game); assert.equal(two.status, 200, game);
-    assert.notEqual(one.body.puzzleId, two.body.puzzleId, `${game} reused a puzzleId`);
-    assert.deepEqual(two.body.prompt, one.body.prompt, `${game} sample was freshly generated`);
-  }
 });
 
 test('confirmed expiry resets a streak and watermark prevents recounting after restart', async t => {
@@ -147,30 +144,6 @@ test('already-closed duel attempts reveal no answer and award no further credit'
 test('confidence points do not outrank more solved puzzles', async t => {
   const s=await setup(t,{'leaderboard.json':{walk:{steady:{bestStreak:2,solved:8,plays:10,points:0},wagerer:{bestStreak:2,solved:2,plays:2,points:9999}}}});
   assert.equal((await s.request('/api/leaderboard/walk')).body.board[0].designation,'steady');
-});
-
-test('daily pages archive past demos with answers and never reveal today\'s', async t => {
-  const today=new Date().toISOString().slice(0,10), yesterday=new Date(Date.now()-86400000).toISOString().slice(0,10);
-  const demo=(prompt,answer,summary)=>({pub:{game:'walk',prompt,instructions:'Report x,y.',generatorVersion:'test',difficulty:{skill:'Spatial state tracking'}},answer,explanation:{summary}});
-  const s=await setup(t,{'daily-demos.json':{[yesterday]:{walk:demo('F1 <b>old</b>','yesterday-answer-7','Because <i>reasons</i>.')},[today]:{walk:demo('TODAY-PROMPT','today-answer-9','Today summary.')}}});
-  const sample=await s.request('/api/sample/walk');
-  assert.equal(sample.body.prompt,'TODAY-PROMPT');
-  assert.equal((await s.request('/api/check',null,{puzzleId:sample.body.puzzleId,guess:'today-answer-9'})).body.correct,true);
-  const html=async route=>{const r=await fetch(s.base+route,{redirect:'manual'});return {status:r.status,location:r.headers.get('location'),text:await r.text()};};
-  const daily=await html('/daily');
-  assert.equal(daily.status,200);assert.match(daily.text,/TODAY-PROMPT/);assert.doesNotMatch(daily.text,/today-answer-9|Today summary/);
-  assert.match(daily.text,/yesterday-answer-7/);assert.match(daily.text,/F1 &lt;b&gt;old&lt;\/b&gt;/);assert.doesNotMatch(daily.text,/<b>old<\/b>|<script/);
-  assert.deepEqual([(await html('/daily/'+today)).status,(await html('/daily/'+today)).location],[302,'/daily']);
-  const past=await html('/daily/'+yesterday);
-  assert.equal(past.status,200);assert.match(past.text,/yesterday-answer-7/);assert.match(past.text,/Because &lt;i&gt;reasons&lt;\/i&gt;\./);
-  for(const route of ['/daily/2099-01-01','/daily/not-a-date','/daily/2001-01-01'])assert.equal((await html(route)).status,404,route);
-  const sitemap=await html('/sitemap.xml');
-  assert.match(sitemap.text,new RegExp(`<loc>https://www.thelatentlounge.com/daily/${yesterday}</loc><lastmod>${today}</lastmod>`));
-  assert.doesNotMatch(sitemap.text,new RegExp(`/daily/${today}<`));
-  const stored=JSON.parse(fs.readFileSync(path.join(s.dir,'daily-demos.json')));
-  assert.equal(stored[today].walk.answer,'today-answer-9');assert.equal(Object.keys(stored[today]).length,7);
-  const dossier=await html('/agent/%3Cscript%3Ex');
-  assert.match(dossier.text,/<title>&lt;script&gt;x — streaks/);assert.doesNotMatch(dossier.text,/<title><script>/);
 });
 
 test('public discovery assets and health probe work without paying', async t => {
@@ -310,7 +283,7 @@ test('pending and malformed settlement results preserve recovery evidence',async
 });
 
 test('slow rejected verification does not block browsing or answering',async t=>{
-  const s=await setup(t); const sample=await s.request('/api/sample/walk');
+  const s=await setup(t); const sample=await s.request('/api/play/walk',b);
   let release; s.state.verifyWait=new Promise(resolve=>{release=resolve;});s.state.verifyReject=true;
   const payment=s.request('/api/play/cipher',a);
   while(!s.state.verifyEntered) await new Promise(resolve=>setTimeout(resolve,10));
@@ -318,7 +291,7 @@ test('slow rejected verification does not block browsing or answering',async t=>
     const res=await fetch(s.base+'/api/menu',{signal:AbortSignal.timeout(1500)});assert.equal(res.status,200);
     const answer=await fetch(s.base+'/api/check',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({puzzleId:sample.body.puzzleId,guess:'wrong'}),signal:AbortSignal.timeout(1500)});assert.equal(answer.status,200);
   } finally {release();}
-  assert.equal((await payment).status,402);assert.equal(s.state.settlements,0);
+  assert.equal((await payment).status,402);assert.equal(s.state.settlements,1);
 });
 
 test('reserved names are rejected before charging; existing paid reserved-name attempts still score',async t=>{
