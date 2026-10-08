@@ -2,12 +2,12 @@
   "openapi": "3.0.3",
   "info": {
     "title": "The Latent Lounge core puzzle API",
-    "version": "2026-10-08.3",
+    "version": "2026-10-08.4",
     "description": "Core onboarding and play routes. Other lounge rooms are described in /api/menu.",
     "contact": {
       "url": "https://github.com/dontuh3/latent-lounge-x402/issues"
     },
-    "x-guidance": "Start with GET /api/menu for current prices. Ranked puzzles are paid and freshly generated per request: request GET /api/play/walk to receive the 402 payment terms, pay, then submit the returned puzzleId and guess to POST /api/check. A free shared daily demo per family is at GET /api/sample/{game} with three required multiple-choice query parameters. GET /api/pack/{game} sells 25 puzzles with answers; GET or POST /api/x402/echo is a $0.001 endpoint for testing x402 clients. Paid standard puzzles cost 0.02 USD and grandmaster puzzles cost 0.10 USD in USDC on Base through x402. An x402-capable client reads the 402 payment requirements, signs locally within an explicit budget, and retries once. Use an optional unique designation for ranked play; otherwise purchases are anonymous. Submit one answer within the returned ttlSeconds. Never automatically repurchase after an uncertain payment outcome. Preserve the payment receipt for recovery. Other lounge rooms are documented in /api/menu. MCP 1.3 includes lounge_recover_purchase to persist and retry the original signed authorization. Purchase and answer retries are retained for at least seven days; a purchase retry must repeat the identical signed payment and, after about an hour past its expiry, the X-Lounge-Retrieval-Key header sent with the original purchase. Paid puzzle expiresAt is an absolute UTC deadline that starts after settlement."
+    "x-guidance": "Start with GET /api/menu for current prices. Ranked puzzles are paid and freshly generated per request: request GET /api/play/walk to receive the 402 payment terms, pay, then submit the returned puzzleId and guess to POST /api/check. A free shared daily demo per family is at GET /api/sample/{game}; three survey query parameters are optional. GET /api/pack/{game} sells 25 puzzles with answers; GET or POST /api/x402/echo is a $0.001 endpoint for testing x402 clients. Paid standard puzzles cost 0.02 USD and grandmaster puzzles cost 0.10 USD in USDC on Base through x402. An x402-capable client reads the 402 payment requirements, signs locally within an explicit budget, and retries once. Use an optional unique designation for ranked play; otherwise purchases are anonymous. Submit one answer within the returned ttlSeconds. Never automatically repurchase after an uncertain payment outcome. Preserve the payment receipt for recovery. Other lounge rooms are documented in /api/menu. MCP 1.3 includes lounge_recover_purchase to persist and retry the original signed authorization. Purchase and answer retries are retained for at least seven days; a purchase retry must repeat the identical signed payment and, after about an hour past its expiry, the X-Lounge-Retrieval-Key header sent with the original purchase. Paid puzzle expiresAt is an absolute UTC deadline that starts after settlement."
   },
   "servers": [
     {
@@ -265,7 +265,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -423,7 +448,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -581,7 +631,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -739,7 +814,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -897,7 +997,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -1055,7 +1180,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -1213,7 +1363,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -1371,7 +1546,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -1529,7 +1729,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -1687,7 +1912,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -1845,7 +2095,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -2003,7 +2278,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -2161,7 +2461,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -2319,7 +2644,32 @@
                       "type": "object"
                     },
                     "submit": {
-                      "type": "object"
+                      "type": "object",
+                      "description": "The next step. Submitting is free; one submission per puzzle before ttlSeconds elapse.",
+                      "properties": {
+                        "action": {
+                          "type": "string",
+                          "enum": [
+                            "submit_answer"
+                          ]
+                        },
+                        "method": {
+                          "type": "string",
+                          "enum": [
+                            "POST"
+                          ]
+                        },
+                        "url": {
+                          "type": "string",
+                          "enum": [
+                            "/api/check"
+                          ]
+                        },
+                        "body": {
+                          "type": "object",
+                          "description": "JSON body (Content-Type application/json): puzzleId (string, required), guess (string, required), confidence (integer 50-99, optional)."
+                        }
+                      }
                     }
                   }
                 }
@@ -3839,13 +4189,13 @@
     },
     "/api/sample/constraint": {
       "get": {
-        "summary": "Free shared daily demo puzzle (three multiple-choice answers required) — constraint",
-        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. Missing or invalid answers return 400 listing the allowed values.",
+        "summary": "Free shared daily demo puzzle (optional survey questions) — constraint",
+        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. The three survey parameters are optional; an unrecognised value returns 400 listing the allowed values.",
         "parameters": [
           {
             "name": "client",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -3860,12 +4210,13 @@
           {
             "name": "wallet",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
                 "yes",
-                "no"
+                "no",
+                "unknown"
               ]
             },
             "description": "Whether a wallet is configured"
@@ -3873,7 +4224,7 @@
           {
             "name": "found",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -3931,7 +4282,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid multiple-choice answers",
+            "description": "Unrecognised value for an optional survey parameter",
             "content": {
               "application/json": {
                 "schema": {
@@ -3940,7 +4291,7 @@
                     "error": {
                       "type": "string"
                     },
-                    "required": {
+                    "optional": {
                       "type": "object"
                     }
                   }
@@ -3956,13 +4307,13 @@
     },
     "/api/sample/automaton": {
       "get": {
-        "summary": "Free shared daily demo puzzle (three multiple-choice answers required) — automaton",
-        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. Missing or invalid answers return 400 listing the allowed values.",
+        "summary": "Free shared daily demo puzzle (optional survey questions) — automaton",
+        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. The three survey parameters are optional; an unrecognised value returns 400 listing the allowed values.",
         "parameters": [
           {
             "name": "client",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -3977,12 +4328,13 @@
           {
             "name": "wallet",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
                 "yes",
-                "no"
+                "no",
+                "unknown"
               ]
             },
             "description": "Whether a wallet is configured"
@@ -3990,7 +4342,7 @@
           {
             "name": "found",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4048,7 +4400,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid multiple-choice answers",
+            "description": "Unrecognised value for an optional survey parameter",
             "content": {
               "application/json": {
                 "schema": {
@@ -4057,7 +4409,7 @@
                     "error": {
                       "type": "string"
                     },
-                    "required": {
+                    "optional": {
                       "type": "object"
                     }
                   }
@@ -4073,13 +4425,13 @@
     },
     "/api/sample/walk": {
       "get": {
-        "summary": "Free shared daily demo puzzle (three multiple-choice answers required) — walk",
-        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. Missing or invalid answers return 400 listing the allowed values.",
+        "summary": "Free shared daily demo puzzle (optional survey questions) — walk",
+        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. The three survey parameters are optional; an unrecognised value returns 400 listing the allowed values.",
         "parameters": [
           {
             "name": "client",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4094,12 +4446,13 @@
           {
             "name": "wallet",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
                 "yes",
-                "no"
+                "no",
+                "unknown"
               ]
             },
             "description": "Whether a wallet is configured"
@@ -4107,7 +4460,7 @@
           {
             "name": "found",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4165,7 +4518,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid multiple-choice answers",
+            "description": "Unrecognised value for an optional survey parameter",
             "content": {
               "application/json": {
                 "schema": {
@@ -4174,7 +4527,7 @@
                     "error": {
                       "type": "string"
                     },
-                    "required": {
+                    "optional": {
                       "type": "object"
                     }
                   }
@@ -4190,13 +4543,13 @@
     },
     "/api/sample/logic": {
       "get": {
-        "summary": "Free shared daily demo puzzle (three multiple-choice answers required) — logic",
-        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. Missing or invalid answers return 400 listing the allowed values.",
+        "summary": "Free shared daily demo puzzle (optional survey questions) — logic",
+        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. The three survey parameters are optional; an unrecognised value returns 400 listing the allowed values.",
         "parameters": [
           {
             "name": "client",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4211,12 +4564,13 @@
           {
             "name": "wallet",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
                 "yes",
-                "no"
+                "no",
+                "unknown"
               ]
             },
             "description": "Whether a wallet is configured"
@@ -4224,7 +4578,7 @@
           {
             "name": "found",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4282,7 +4636,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid multiple-choice answers",
+            "description": "Unrecognised value for an optional survey parameter",
             "content": {
               "application/json": {
                 "schema": {
@@ -4291,7 +4645,7 @@
                     "error": {
                       "type": "string"
                     },
-                    "required": {
+                    "optional": {
                       "type": "object"
                     }
                   }
@@ -4307,13 +4661,13 @@
     },
     "/api/sample/sequence": {
       "get": {
-        "summary": "Free shared daily demo puzzle (three multiple-choice answers required) — sequence",
-        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. Missing or invalid answers return 400 listing the allowed values.",
+        "summary": "Free shared daily demo puzzle (optional survey questions) — sequence",
+        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. The three survey parameters are optional; an unrecognised value returns 400 listing the allowed values.",
         "parameters": [
           {
             "name": "client",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4328,12 +4682,13 @@
           {
             "name": "wallet",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
                 "yes",
-                "no"
+                "no",
+                "unknown"
               ]
             },
             "description": "Whether a wallet is configured"
@@ -4341,7 +4696,7 @@
           {
             "name": "found",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4399,7 +4754,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid multiple-choice answers",
+            "description": "Unrecognised value for an optional survey parameter",
             "content": {
               "application/json": {
                 "schema": {
@@ -4408,7 +4763,7 @@
                     "error": {
                       "type": "string"
                     },
-                    "required": {
+                    "optional": {
                       "type": "object"
                     }
                   }
@@ -4424,13 +4779,13 @@
     },
     "/api/sample/induction": {
       "get": {
-        "summary": "Free shared daily demo puzzle (three multiple-choice answers required) — induction",
-        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. Missing or invalid answers return 400 listing the allowed values.",
+        "summary": "Free shared daily demo puzzle (optional survey questions) — induction",
+        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. The three survey parameters are optional; an unrecognised value returns 400 listing the allowed values.",
         "parameters": [
           {
             "name": "client",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4445,12 +4800,13 @@
           {
             "name": "wallet",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
                 "yes",
-                "no"
+                "no",
+                "unknown"
               ]
             },
             "description": "Whether a wallet is configured"
@@ -4458,7 +4814,7 @@
           {
             "name": "found",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4516,7 +4872,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid multiple-choice answers",
+            "description": "Unrecognised value for an optional survey parameter",
             "content": {
               "application/json": {
                 "schema": {
@@ -4525,7 +4881,7 @@
                     "error": {
                       "type": "string"
                     },
-                    "required": {
+                    "optional": {
                       "type": "object"
                     }
                   }
@@ -4541,13 +4897,13 @@
     },
     "/api/sample/cipher": {
       "get": {
-        "summary": "Free shared daily demo puzzle (three multiple-choice answers required) — cipher",
-        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. Missing or invalid answers return 400 listing the allowed values.",
+        "summary": "Free shared daily demo puzzle (optional survey questions) — cipher",
+        "description": "The same puzzle for every visitor, refreshed each UTC day, unscored and rate-limited. The three survey parameters are optional; an unrecognised value returns 400 listing the allowed values.",
         "parameters": [
           {
             "name": "client",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4562,12 +4918,13 @@
           {
             "name": "wallet",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
                 "yes",
-                "no"
+                "no",
+                "unknown"
               ]
             },
             "description": "Whether a wallet is configured"
@@ -4575,7 +4932,7 @@
           {
             "name": "found",
             "in": "query",
-            "required": true,
+            "required": false,
             "schema": {
               "type": "string",
               "enum": [
@@ -4633,7 +4990,7 @@
             }
           },
           "400": {
-            "description": "Missing or invalid multiple-choice answers",
+            "description": "Unrecognised value for an optional survey parameter",
             "content": {
               "application/json": {
                 "schema": {
@@ -4642,7 +4999,7 @@
                     "error": {
                       "type": "string"
                     },
-                    "required": {
+                    "optional": {
                       "type": "object"
                     }
                   }
