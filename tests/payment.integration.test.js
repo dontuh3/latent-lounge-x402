@@ -77,17 +77,44 @@ test('a rejected settlement releases the name reservation', async t => {
   s.state.reject = false;
   assert.equal((await s.request('/api/play/sequence?designation=retry-name', b)).status, 200);
 });
-test('free demos and daily pages are retired and issue nothing', async t => {
+test('free demos ask three multiple-choice questions and stay a shared daily demo', async t => {
   const s=await setup(t);
-  const demo=await s.request('/api/sample/walk'), unknown=await s.request('/api/sample/nope');
-  assert.equal(demo.status,410);assert.equal(demo.body.play,'/api/play/walk');assert.match(demo.body.error,/paid/);
-  assert.equal(unknown.status,410);assert.equal(unknown.body.play,'/api/play/walk');
-  assert.equal(fs.existsSync(path.join(s.dir,'pending-puzzles.json')),false);assert.equal(fs.existsSync(path.join(s.dir,'daily-demos.json')),false);
+  const admin=async()=>(await fetch(s.base+'/api/admin/stats',{headers:{'x-admin-key':'local-test-admin'}})).json();
+  const missing=await s.request('/api/sample/walk'), invalid=await s.request('/api/sample/walk?client=http&wallet=maybe&found=bazaar');
+  assert.equal(missing.status,400);assert.deepEqual(Object.keys(missing.body.required),['client','wallet','found']);
+  assert.equal(invalid.status,400);assert.match(invalid.body.error,/wallet/);assert.doesNotMatch(invalid.body.error,/client \(/);
+  const q='?client=HTTP&wallet=no&found=bazaar';
+  const one=await s.request('/api/sample/walk'+q), two=await s.request('/api/sample/walk'+q);
+  assert.equal(one.status,200);assert.notEqual(one.body.puzzleId,two.body.puzzleId);assert.deepEqual(two.body.prompt,one.body.prompt);
+  for(const key of ['answer','solution','explanation'])assert.equal(one.body[key],undefined,key);
+  assert.equal((await s.request('/api/check',null,{puzzleId:one.body.puzzleId,guess:'x'})).status,200);
+  assert.deepEqual((await admin()).demoSurvey.client,{http:2});assert.deepEqual((await admin()).demoSurvey.found,{bazaar:2});
+  assert.equal(fs.existsSync(path.join(s.dir,'pending-puzzles.json')),false);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(s.dir,'daily-demos.json')))[new Date().toISOString().slice(0,10)].walk.pub.prompt!==undefined,true);
   for(const route of ['/daily','/daily/archive','/daily/2026-10-05'])assert.equal((await fetch(s.base+route)).status,410,route);
   assert.doesNotMatch(await (await fetch(s.base+'/sitemap.xml')).text(),/daily/);
-  assert.doesNotMatch(JSON.stringify((await s.request('/api/menu')).body),/api\/sample/);
   const dossier=await (await fetch(s.base+'/agent/%3Cscript%3Ex')).text();
   assert.match(dossier,/<title>&lt;script&gt;x — streaks/);assert.doesNotMatch(dossier,/<title><script>/);
+});
+
+test('paid echo and puzzle packs settle once, store nothing scorable and count as sales', async t => {
+  const s=await setup(t);
+  const quote=await s.request('/api/x402/echo');
+  assert.equal(quote.status,402);assert.equal(quote.body.accepts[0].maxAmountRequired,'1000');
+  const echo=await s.request('/api/x402/echo',a);
+  assert.equal(echo.status,200);assert.equal(echo.settled,true);assert.equal(echo.body.payer,a);assert.equal(echo.body.header,'X-PAYMENT');
+  const posted=await s.request('/api/x402/echo',b,{hello:'lounge'});
+  assert.equal(posted.status,200);assert.deepEqual(posted.body.receivedBody,{hello:'lounge'});
+  const pack=await s.request('/api/pack/walk',a);
+  assert.equal(pack.status,200);assert.equal(pack.body.count,25);assert.equal(pack.body.puzzles.length,25);
+  assert.equal(typeof pack.body.puzzles[0].answer,'string');assert.ok(pack.body.puzzles[0].explanation.summary);assert.ok(pack.body.license);
+  assert.equal(new Set(pack.body.puzzles.map(p=>p.id)).size,25);
+  assert.equal(s.state.settlements,3);
+  assert.equal(fs.existsSync(path.join(s.dir,'pending-puzzles.json')),false);
+  const sales=(await (await fetch(s.base+'/api/admin/stats',{headers:{'x-admin-key':'local-test-admin'}})).json()).sales;
+  assert.deepEqual(sales,{'GET /api/x402/echo':{count:1,usdc:0.001},'POST /api/x402/echo':{count:1,usdc:0.001},'GET /api/pack/walk':{count:1,usdc:0.25}});
+  const replay=await fetch(s.base+'/api/pack/walk',{headers:{'X-PAYMENT':pack.payment}});
+  assert.equal(replay.status,200);assert.deepEqual((await replay.json()).puzzles,pack.body.puzzles);assert.equal(s.state.settlements,3);
 });
 test('corrupt ledgers return unavailable and preserve the damaged bytes',async t=>{
  const s=await setup(t);const file=path.join(s.dir,'leaderboard.json');fs.writeFileSync(file,'{broken');const r=await s.request('/api/leaderboard');assert.equal(r.status,503);assert.equal(fs.readFileSync(file,'utf8'),'{broken');
